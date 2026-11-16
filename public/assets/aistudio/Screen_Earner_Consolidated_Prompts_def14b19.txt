@@ -1,0 +1,120 @@
+================================================================================
+SCREEN EARNER — CONSOLIDATED IMPLEMENTATION PROMPTS
+================================================================================
+
+--------------------------------------------------------------------------------
+PROMPT 1: CRITICAL REPAIR — BET/CASHOUT HANDS, LIVE MULTIPLIER SYNC, CRASH HISTORY & START BUTTON
+--------------------------------------------------------------------------------
+# CRITICAL REPAIR: FIX BET/CASHOUT HANDS, LIVE MULTIPLIER SYNC, CRASH HISTORY & START BUTTON
+
+The floating overlay and window detection are now working, but five core functional pieces must be fixed immediately:
+
+## 1. SINGLE-TAP SETTINGS & REAL EXECUTION FOR BET AND CASH OUT HANDS
+- **Single-tapping** any spawned **BET** floating button or **CASH OUT** floating button must immediately open a compact floating settings card right next to that button (do not require double-tap or long-press).
+- **Pre-assigned Roles:**
+  - Every **BET** button is permanently bound to placing bets on the underlying site (`ACTION_PLACE_BET`).
+  - Every **CASH OUT** button is permanently bound to cashing out on the underlying site (`ACTION_CASH_OUT`).
+- **Button Settings Card Must Include:**
+  1. **Calibrate Target ("Set Screen Target"):** Lets the user tap the exact spot on the underlying BetPawa/SportyBet game where the real "Bet" or "Cash Out" button sits, saving those `(targetX, targetY)` screen coordinates independently of where the floating hand icon is placed.
+  2. **Execution Behavior:** Configure stake amount / panel assignment (for Bet) or auto-cashout target multiplier (for Cash Out).
+  3. **Test Tap ("Test Hand Now"):** Dispatches a real test gesture via `AccessibilityService.dispatchGesture()` at `(targetX, targetY)` so the user can verify the hand actually clicks the website button.
+  4. **Save / Close** and **Remove Button**.
+- **Fix Gesture Execution:** Ensure `AccessibilityController` dispatches a valid `GestureDescription` (`StrokeDescription` with 50ms duration at the calibrated `targetX, targetY` coordinates) with `canPerformGestures="true"` in `accessibility_service_config.xml`.
+
+## 2. FIX LIVE MULTIPLIER REFLECTION FROM THE DETECTED GAME
+- Currently, the active window is detected, but the live multiplier from the game is not updating properly in the overlay UI.
+- Fix the pipeline between `GameDetection.kt` / `AccessibilityController.kt` and `FloatingBubbleService.kt`:
+  - Continuously parse the live multiplier text (matching regex `\d+\.\d{2}x`, e.g., `1.45x`, `12.80x`) from the active accessibility node tree or screen capture OCR in real time.
+  - Broadcast/push every multiplier update immediately to the floating overlay state via a `StateFlow` or local broadcast so the overlay displays the exact live multiplier currently shown on the BetPawa/SportyBet screen without delay.
+  - Properly distinguish between `BETTING_OPEN` (waiting/placing bets), `IN_FLIGHT` (multiplier actively climbing), and `CRASHED` (round ended / "Flew Away" detected).
+
+## 3. TIMESTAMPED CRASH MULTIPLIER HISTORY
+- Whenever a round transitions to `CRASHED` (or "Flew Away" is detected), record the **final crashed multiplier** along with the **exact timestamp** (e.g., `1.42x — 08:14:22` or `14.08x — 08:15:09`) into Room Database and in-memory state.
+- Display this scrollable **Crash History (Multiplier + Crash Time)** inside the compact expanded **SE** control panel so the user can verify every recorded round and verify strategy trigger counts (`< 2.00x` streak, `> 10.00x` wait, `> 13.00x` rules).
+
+## 4. FUNCTIONAL START / STOP AUTOMATION BUTTON
+- Wire the **START** button in the expanded **SE** menu so tapping it:
+  1. Verifies that at least one **BET** hand has calibrated target coordinates (`targetX > 0, targetY > 0`) and Accessibility Service is active (prompting the user if not calibrated yet).
+  2. Switches the overlay state to **ACTIVE / RUNNING** (visually changing the button to **STOP / PAUSE** and showing a green active indicator on the SE bubble).
+  3. Enables the `AutomationEngine` + `StrategyEngine` loop to automatically trigger the calibrated **BET** hand when strategy entry conditions are met during `BETTING_OPEN`, and trigger the calibrated **CASH OUT** hand when the live detected multiplier reaches the configured target during `IN_FLIGHT`.
+
+
+--------------------------------------------------------------------------------
+PROMPT 2: STRATEGY & AUTOMATION UPGRADE — LOSS/WIN RULES, TIME-RANGES, STATS & DIRECT UI STAKE EDITING
+--------------------------------------------------------------------------------
+# STRATEGY & AUTOMATION UPGRADE: ADVANCED LOSS/WIN RULES, MULTIPLIER TIME-RANGES, STATS & DIRECT UI STAKE EDITING
+
+Update the Screen Earner native Kotlin automation engine, strategy manager, and history logs to support the following advanced rules and direct site interactions:
+
+## 1. COMPREHENSIVE STRATEGY & RECOVERY RULES
+Implement and allow users to select/toggle between the following distinct strategy engines in native Kotlin:
+
+- **Standard Recovery Strategies:**
+  - **After 9 Losses:** Fetch 2 wins (reset/stop progression after 2 verified wins).
+  - **After 14 Losses:** Fetch 2 wins.
+- **Multiplier-Range Waiting Strategies:**
+  - **Above 10x and below 100x:** Wait 10 minutes, then fetch 2 wins.
+  - **Above 100x and below 1000x:** Wait 5 minutes, then fetch 2 wins.
+- **Quick Recovery Strategies:**
+  - **After 2 Losses:** Fetch 2 wins.
+  - **After 3 Losses:** Fetch 2 wins.
+  - **After 5 Losses:** Fetch 2 wins.
+  - **After 7 Losses:** Fetch 2 wins.
+- **Stake Progression Rules (Configurable per Strategy):**
+  - Option A: **Add Amount** after each loss (custom incremental stake addition).
+  - Option B: **Double Amount** ($2 \times$ stake) after each loss with the same target multiplier.
+
+## 2. ADVANCED HISTORY, TIME FILTERS & BIG MULTIPLIER TRACKING
+- **Time-Filtered History Sections:** Record and display multiplier history aggregated across configurable rolling time windows: **30 minutes, 1 hour, 3 hours, and 5 hours**.
+- **Statistical Breakdown per Time Window:**
+  - Total rounds recorded.
+  - Count and exact timestamps of occurrences for multipliers **below 2.00x**.
+  - Count and exact timestamps for multipliers **above 50.00x**.
+  - Count and exact timestamps for multipliers **above 100.00x**.
+- **Big Multiplier Spotlight:** Automatically identify and display the highest recorded multiplier within the last **1 hour** along with its exact crash timestamp.
+
+## 3. DIRECT UI DETECTION & STAKE MODIFICATION ON THE TARGET APP
+- **Smart Element Detection (`GameDetection.kt` / `AccessibilityController.kt`):**
+  - The app must actively scan the underlying BetPawa or SportyBet accessibility node hierarchy to automatically detect the exact input fields and buttons where stakes are placed, added, or doubled.
+- **Direct Interaction:**
+  - When the strategy dictates adding or doubling the stake, the `AccessibilityController` must directly interact with the detected stake input box or buttons on the target app interface (using Accessibility actions or calibrated gesture clicks) to input the updated stake amount before placing the bet, rather than only relying on internal variables.
+
+
+--------------------------------------------------------------------------------
+PROMPT 3: FINAL ARCHITECTURE UPGRADE — EXCLUSIVE EXECUTION, 3-MINUTE TIMEOUT GUARD & FULL/COMPACT SETTINGS SWITCHING
+--------------------------------------------------------------------------------
+# FINAL ARCHITECTURE UPGRADE: EXCLUSIVE STRATEGY EXECUTION, 3-MINUTE TIMEOUT GUARD, FULL/COMPACT SETTINGS SWITCHING & AUTOMATED HANDS
+
+Refactor the Screen Earner native Android automation engine, strategy manager, history logging, and overlay UI to incorporate the following critical rules:
+
+## 1. NON-OVERLAPPING STRATEGY LOCK & 3-MINUTE TIMEOUT GUARD
+- **Exclusive Strategy Operation:** The Strategy Engine must ensure that strategies **never overlap**. Only one strategy session can execute at a time.
+- **Active Session Lock & Check:** Once a strategy triggers and places a bet, the engine enters a locked state. If another strategy trigger condition arises while a session is active, it must wait.
+- **3-Minute Grace Period & Auto-Cancellation:** 
+  - If a betting session remains active for more than **3 minutes**, the engine checks if space/rounds are available for a new cycle.
+  - If the betting is still ongoing after 3 minutes, **cancel all pending/active betting actions for that cycle**, terminate the current session gracefully, reset state counters, and wait for a brand new trigger cycle.
+
+## 2. FULLY EDITABLE STRATEGIES & RISK PARAMETERS
+- Every single strategy threshold (loss counts like 2, 3, 5, 7, 9, 14; multiplier ranges like 10x–100x or 100x–1000x; wait times like 5 or 10 minutes) and stake progression rule (Add Amount vs. Double Amount) must be **fully editable** by the user in the Settings screen and persisted in the local Room database.
+
+## 3. SMART UI VIEW SWITCHING (SETTINGS FULL-PAGE VS. FLOATING UTILITY)
+- **Settings in Main App:** When the user opens Settings from the main app interface, it expands into a full-page clean view for deep configuration.
+- **Auto-Return After Save:** As soon as the user taps **"Save Settings"**, the main app automatically minimizes/hides (`moveTaskToBack(true)` or returns to home), instantly restoring the **small floating SE utility overlay** on top of the phone screen so the user can immediately interact with their real betting apps (BetPawa / SportyBet).
+
+## 4. COMPREHENSIVE STRATEGY SUITE TO SUPPORT
+Allow users to toggle/select from and fully configure:
+- **Quick Recovery:** After 2, 3, 5, or 7 losses $\rightarrow$ fetch 2 wins.
+- **Standard Recovery:** After 9 or 14 losses $\rightarrow$ fetch 2 wins.
+- **Multiplier-Range Waiting:** Above 10x and below 100x (wait 10 mins $\rightarrow$ 2 wins); Above 100x and below 1000x (wait 5 mins $\rightarrow$ 2 wins).
+- **Stake Progression:** Option to Add Amount or Double Amount after each loss.
+
+## 5. ADVANCED HISTORY, TIME FILTERS & BIG MULTIPLIER TRACKING
+- Time-filtered history sections across rolling windows: **30 minutes, 1 hour, 3 hours, and 5 hours**.
+- Statistical breakdown per window: Total rounds, count and exact timestamps for multipliers **below 2.00x**, **above 50.00x**, and **above 100.00x**.
+- **Big Multiplier Spotlight:** Automatically display the highest recorded multiplier in the last 1 hour with its exact crash timestamp.
+
+## 6. DIRECT UI DETECTION & AUTOMATED HANDS GESTURE EXECUTION
+- **Element Detection & Interaction:** `AccessibilityController` and `GameDetection` must scan underlying BetPawa/SportyBet nodes to detect stake input fields and buttons. When stake modification (adding/doubling) is required, the app directly interacts with the detected UI elements on the target app interface.
+- **Bet and Cash Out Hands:** Single-tapping any spawned BET or CASH OUT floating button opens its direct settings panel to calibrate screen target coordinates (`targetX`, `targetY`) and test the hand via `AccessibilityService.dispatchGesture()`.
+- **Start Button Activation:** Tapping START verifies button calibration, switches overlay state to active, and runs the strategy loop while enforcing risk limits (max stake, max session loss, emergency stop).
+================================================================================

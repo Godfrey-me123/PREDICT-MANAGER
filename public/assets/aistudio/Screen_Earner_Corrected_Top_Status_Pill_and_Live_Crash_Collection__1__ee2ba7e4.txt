@@ -1,0 +1,169 @@
+SCREEN EARner — CORRECTED TARGET: RED-CIRCLED TOP FLOATING STATUS PILL
+
+IMPORTANT VISUAL CLARIFICATION
+The target is the SMALL HORIZONTAL FLOATING STATUS PILL circled in red at the TOP of the uploaded screenshot. It currently looks like:
+[green status dot] BetPawa Aviator | 1.08x | R:2002
+
+It is the compact pill above the game, near the browser address/game header.
+
+It is NOT the game's “Round History” panel, NOT the large AUTOPREDICTOR MONITOR panel, and NOT the AP circular floating bubble.
+
+All other requirements from the previous multiplier-collection and duplicate-prevention instructions remain intact. Do not remove or redesign unrelated components.
+
+OBJECTIVE
+Rebuild this red-circled top floating status pill so it displays ONLY:
+1. LAST CRASH: the last confirmed crashed multiplier.
+2. ROUND: the current game round identifier/number, if reliably available.
+
+The collector must record only newly completed live crashed multipliers, exactly once per genuine round. The game's historical history panel must never feed duplicate entries into live history.
+
+1. TOP FLOATING STATUS PILL — CONTENT
+Locate the existing compact top floating pill shown in the screenshot. Inspect its actual overlay/window implementation and data source.
+
+Replace its current content (game name + live multiplier + round) with two clearly identified values, for example:
+LAST CRASH 2.10x | ROUND R:2002
+These are illustrative values only.
+
+Rules:
+- LAST CRASH changes only after a newly completed round's final multiplier is confirmed.
+- ROUND displays the current game round identifier/number when reliably available.
+- Never display the rising/live multiplier as LAST CRASH.
+- Never display a predicted value or treat an old history value as a new crash.
+- If no reliable round identifier is available, show “ROUND: —”; do not invent or increment a round number.
+- If no crash has yet been confirmed in this session, show “LAST CRASH: —” or a clearly labelled persisted previous confirmed crash.
+- Keep the pill compact and readable. The green monitoring indicator may remain.
+- Do not make the main monitor or AP bubble move as a side effect.
+
+2. TOP PILL — DRAGGING AND POSITION
+This instruction applies specifically to the red-circled compact top pill.
+- Investigate why it does not move/respond to dragging.
+- Make it independently draggable and have it follow the user's finger.
+- Keep its position after release and save/restore it after service/app restart.
+- Clamp it within usable screen bounds, accounting for system bars and display cutouts.
+- Avoid covering Bet/Cash Out controls where possible.
+- Do not intercept touches outside the pill.
+- Do not reset its position on every accessibility event, game update, or overlay redraw.
+- Ensure overlay window type/touch flags permit dragging without breaking game interaction.
+- Keep its screen position state separate from multiplier and round data.
+
+3. RECORD ONLY NEWLY CRASHED MULTIPLIERS
+The official live multiplier history may contain only final multipliers from newly completed rounds observed during monitoring.
+
+Never record:
+- The current rising/live multiplier.
+- A multiplier sampled repeatedly during one round.
+- Values copied from the game's old Round History panel.
+- Old results revealed by opening, closing, refreshing, or scrolling game history.
+- Predicted values or pattern suggestions.
+- Unverified OCR/accessibility readings.
+- The same crash again because the pill, overlay, or accessibility listener redrew.
+
+Do not automatically backfill old game history into live records. If a manual history-import feature exists, keep it isolated and clearly labelled. Imported values must not be mixed into live crashed-round records or trigger live alarms.
+
+4. DETECT THE ROUND LIFECYCLE
+Implement explicit states based on actual available game signals:
+WAITING_FOR_ROUND → ROUND_STARTED → MULTIPLIER_RISING → CRASH_DETECTED → FINAL_MULTIPLIER_CONFIRMED → ROUND_RECORDED → WAITING_FOR_NEXT_ROUND.
+
+A round is recordable only after a crash/end-of-round transition is detected and its final multiplier is stable and validated.
+
+Use the strongest available evidence:
+- Actual game round ID/state if exposed.
+- Accessibility text/state transitions if exposed.
+- Reliable visual crash indicator and final multiplier if accessibility data is unavailable.
+- A stability/confirmation check to ensure the final value is no longer changing.
+
+Do not treat disappearance of a live multiplier alone as proof of a crash; navigation, loading, occlusion, or app switching may also hide it. If crash or final value cannot be confirmed, mark UNCONFIRMED and do not insert it into official history.
+
+5. ONE RECORD PER GENUINE ROUND
+- Use the game's round ID when available.
+- Otherwise derive a stable identity from the game session and observed round lifecycle/sequence.
+- Repeated observations of one crash must resolve to the same identity.
+- Do not deduplicate by multiplier value alone: two separate rounds can legitimately crash at the same multiplier.
+- Add a database unique constraint/index on stable round identity.
+- Insert transactionally or use an equivalent atomic upsert.
+- Make concurrent callbacks, retries, and service restarts idempotent.
+- Persist confirmed crash time and verification/source status.
+- Do not fabricate missing timestamps or round IDs.
+
+6. EXCLUDE THE GAME'S HISTORY PANEL FROM LIVE RECORDING
+The game's own “Round History” panel (the dark panel containing many multipliers) must not feed the live collector.
+
+Opening, closing, scrolling, or refreshing that panel must not:
+- Insert live crashed-multiplier records.
+- Change LAST CRASH unless a genuinely new live crash is confirmed.
+- Change the current round identifier.
+- Trigger a new-round alarm or notification.
+- Re-run live strategy evaluation as though an old result just occurred.
+
+If the history panel is observed for diagnostics or separate manual import, classify it as HISTORY_ONLY and block it from the live crash pipeline.
+
+7. ONE AUTHORITATIVE PIPELINE
+Use one controlled flow:
+Observe active game state → identify current round → detect round start → observe rising multiplier without recording → detect crash → confirm final multiplier → generate stable round identity → deduplicate transactionally → save one completed-round record → update LAST CRASH in the red-circled top pill → update app history and eligible strategy analysis → issue any configured notification once.
+
+The top pill, main overlay, Patterns screen, and background service must observe the same authoritative stored state. They must not run independent collectors or insert records separately. UI rendering/refresh must never insert records.
+
+8. HISTORY AND PATTERNS
+- Read live history and Patterns from the authoritative unique confirmed-round database.
+- Show each genuine round once in chronological order.
+- Keep current live multiplier separate from completed crash history.
+- Refreshing screens must never insert records.
+- Opening the game's Round History panel must never create records.
+- Preserve two separate genuine rounds even if both have the same multiplier.
+- Distinguish confirmed records from optional unconfirmed diagnostics.
+- Never silently mix imported history with live results.
+
+9. CURRENT ROUND IDENTIFIER
+Read the current round ID/number from a reliable game-provided field if available. Validate it independently of the multiplier.
+Do not infer it by counting crashes unless continuity, missed rounds, and session resets are explicitly handled. Otherwise show “ROUND: —”.
+
+10. CONFIDENCE AND SIGNALS
+Keep the previous correction for unsupported confidence percentages:
+- Remove fabricated “96% confidence” or other unsupported probability percentages.
+- Do not relabel a heuristic/pattern score as a probability.
+- If heuristic, label it “Pattern match score” or “Rule match”.
+- Display a probability only if a genuine model has been validated and calibrated on suitable data.
+- Evaluate live strategies only against confirmed unique rounds and defined current-round conditions.
+- Do not claim past multipliers predict or guarantee the next result.
+
+11. DIAGNOSTIC LOGGING
+Log timestamp, session/round ID, observed live multiplier (diagnostic only), lifecycle transition, crash detection, final multiplier candidate, confirmation result, stable round identity, database action, and rejection reason.
+
+Example:
+15:24:50.000 | ROUND_STARTED | round=R:1835
+15:24:51.000 | MULTIPLIER_RISING | round=R:1835 | live=1.08x | NOT_RECORDED
+15:24:52.400 | CRASH_DETECTED | round=R:1835
+15:24:52.650 | FINAL_MULTIPLIER_CONFIRMED | round=R:1835 | crash=2.10x
+15:24:52.660 | ROUND_RECORDED | round=R:1835 | crash=2.10x | INSERTED
+15:24:52.900 | REPEATED_CALLBACK | round=R:1835 | crash=2.10x | DUPLICATE_IGNORED
+
+12. REQUIRED TESTS
+1. Observe a rising multiplier for several seconds: no history record is created.
+2. Confirm one crash: exactly one record is created.
+3. Trigger repeated accessibility callbacks after the crash: no duplicate is created.
+4. Open, close, and scroll the game's Round History panel: no live records are created.
+5. Observe two consecutive rounds with the same final multiplier: both are recorded once.
+6. Switch apps and return: the same round is not recorded twice.
+7. Restart the monitoring service: existing rounds are not reinserted.
+8. Verify LAST CRASH changes only after a confirmed new crash.
+9. Verify ROUND changes only when a new identifier is reliably detected.
+10. Drag the top pill: it follows the finger and remembers its position after restart.
+11. Verify the top pill does not block game controls or interfere with the main monitor/AP bubble.
+12. Verify unsupported confidence percentages are not displayed.
+
+13. IMPLEMENTATION AND DELIVERABLES
+Inspect the actual project before editing. Identify the existing top status pill overlay/window, accessibility observer, multiplier collector, round-state logic, database/DAO, history UI, and signal engine.
+
+Modify the existing architecture in place. Do not create a second collector, database, or competing source of truth. Preserve all previous instructions and unrelated functionality. Do not reinterpret the target as the game's history panel or large monitor.
+
+After implementation, report:
+- Exact files changed.
+- Confirmation that the red-circled top pill was modified.
+- Why it was not draggable and how position is saved/restored.
+- How the current round identifier is obtained.
+- How crash completion/final multiplier are confirmed.
+- How one-record-per-round enforcement works.
+- Confirmation that game-history observations no longer create live records.
+- What happened to unsupported 96% confidence.
+- Test results, including two consecutive rounds with identical multipliers.
+- Limitations if the game does not expose a reliable round ID or crash signal.

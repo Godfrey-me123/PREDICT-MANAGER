@@ -1,0 +1,171 @@
+SCREEN EARner — CONTINUOUS MONITORING, RESIZABLE AP OVERLAY, FRESH SESSION HISTORY
+
+GOAL
+Keep multiplier monitoring independent of Screen Earner screens and the AP icon. Opening Screen Earner Settings or another non-game screen must not automatically stop, reset, or duplicate collection. Prefer a resizable AP settings/control overlay above the game so users can operate settings while still seeing the game. Record only newly completed, confirmed crashes in the current monitoring session. Remove confidence percentages entirely.
+
+Preserve ALL previous instructions and functionality, including:
+- The exact target is the small red-circled horizontal status pill at the top of the screenshot, NOT the game's Round History panel, the large AUTOPREDICTOR MONITOR panel, or the AP circular icon.
+- That top pill displays only LAST CRASH and current ROUND, and is independently draggable with saved position.
+- Only newly completed, confirmed crashed multipliers are recorded, once per genuine round.
+- The game's old Round History panel must never feed the live collector.
+- Two different rounds with the same multiplier must both be retained.
+- Keep duplicate prevention, background service, notifications/alarms, and unrelated existing features.
+
+1. DECOUPLE MONITORING FROM UI LIFECYCLE
+The collector must be owned by the monitoring engine/foreground service and supported accessibility observer, not by an Activity, Compose screen, AP icon, or overlay panel.
+
+Opening Settings, Patterns, History, or another internal screen must not:
+- Stop or restart the collector.
+- Destroy/reset the active round state machine.
+- Reset the active session or round identity.
+- Create a second collector/listener.
+- Clear valid current-session history.
+- Cause duplicate database inserts.
+
+Activity onPause/onStop/onDestroy and overlay hide/collapse must not stop monitoring. Only explicit user stop/end-session actions or genuine platform/service failure may stop it. UI screens subscribe to the same authoritative repository/database; UI rendering and refresh never insert records.
+
+2. PREFERRED SETTINGS EXPERIENCE: RESIZABLE OVERLAY
+Prefer opening AP settings/control panel as a floating overlay above the game, instead of navigating to a full-screen Screen Earner Activity that hides the game.
+
+The panel must:
+- Have compact, expanded, and minimized states.
+- Be independently draggable and resizable, with sensible min/max bounds.
+- Be scrollable when content exceeds its height.
+- Have a drag handle and clear Save/Apply and Close/Collapse controls.
+- Remember its position and size after restart.
+- Avoid covering Bet/Cash Out controls where possible.
+- Allow game touches outside its visible bounds; do not intercept the whole screen.
+- Update settings through shared service/repository state without recreating the collector.
+- Collapse to the AP icon without stopping monitoring.
+- Use readable Material 3 styling and fit different screen sizes.
+
+The AP circular icon is only a launcher/control surface, not the collector. It must be independently draggable, remember its position, open/collapse the panel, and not restart monitoring when tapped. The AP icon, top status pill, and main AP panel remain separate UI components.
+
+If a settings page cannot safely operate as an overlay, provide a fallback, but keep the foreground service alive and show the true game-accessibility status. Do not silently stop monitoring.
+
+3. ACCESSIBILITY AND BACKGROUND WINDOW LIMITATIONS
+Inspect the existing AccessibilityService configuration and window-observation code. Where supported, use the appropriate accessibility flags/APIs to retrieve interactive windows and identify the target game/browser window. Filter events by target package/window and relevant nodes. Do not treat Screen Earner's own overlay/settings as game content. Do not assume the currently active window is always the game.
+
+If the game window remains accessible while Screen Earner settings are shown, continue collecting from it. If Android/browser stops exposing or rendering the game because it is backgrounded, suspended, hidden, or destroyed:
+- Report GAME_NOT_ACCESSIBLE or GAME_SUSPENDED.
+- Do not reuse stale multiplier values as new observations.
+- Do not invent missing rounds or interpolate values.
+- Do not claim monitoring is active merely because the service process exists.
+- Resume automatically when fresh game data becomes accessible, preserving the same active session and without duplicating the last round.
+
+Do not promise that Android can always expose a background browser game. Test on target Android versions/devices and document limitations. Observe only the user-selected target game for this monitoring purpose.
+
+4. TRUE MONITORING STATUS
+Use explicit states:
+MONITORING (fresh game observations arriving)
+WAITING_FOR_GAME
+GAME_NOT_ACCESSIBLE
+GAME_SUSPENDED
+PAUSED
+STOPPED
+
+The persistent foreground-service notification and AP UI must reflect the actual state. If no fresh game observation is arriving, do not display MONITORING. Switching to Settings must not itself stop the session. Return to the game and resume when accessible.
+
+5. FRESH SESSION AFTER LAUNCH / START
+The product is for current active activity, not old game history. Create an explicit session ID whenever the user starts a new monitoring session.
+
+A new session starts with:
+- Zero current-session confirmed crashes.
+- Empty session history.
+- Reset session-only statistics, averages, distributions, streaks, pattern windows, counters and signal deduplication.
+- No imported old game history.
+- No stale in-memory observations or pending unconfirmed candidates.
+- A fresh round lifecycle that observes the currently active round without pretending it has just crashed.
+
+Do not populate a new session from old database rows or the game's historical Round History panel.
+
+A process/service restart during an active session must restore that same session safely, not silently create a new session or reinsert prior rounds. Only a deliberate new session creates a new session ID.
+
+6. EXPLICIT END SESSION AND CLEAR
+Provide a clearly named action: “END SESSION & CLEAR SESSION DATA”.
+
+When explicitly invoked:
+- Stop the active monitoring session.
+- Stop session-specific alarm playback and pending session notifications as appropriate.
+- Clear active-session multiplier records and unconfirmed candidates.
+- Clear session-only calculations, pattern windows, streaks, averages, distributions and counters.
+- Clear session-specific duplicate-detection state.
+- Reset LAST CRASH and ROUND in the active-session display to placeholders.
+- Set status to STOPPED.
+
+Define behavior precisely:
+- Hiding/collapsing AP panel does NOT end session.
+- Closing AP panel does NOT end session.
+- Moving AP icon or status pill does NOT end session.
+- Opening/closing Settings does NOT end session.
+- Switching apps does NOT end session.
+- PAUSE stops collection temporarily but retains current session history.
+- END SESSION & CLEAR SESSION DATA ends and clears the active session.
+
+If the product has a long-term archive/export feature, keep it separate and never mix it into active-session history. Explain clearly whether archived data is retained. The user's explicit clear action must remove all active-session records and calculations from the active view.
+
+7. FIX FALSE “2000 ROUNDS” DISPLAY
+The user reports seeing about 2000 rounds while only two multipliers exist in history. Correct the data source and labels.
+
+- “SESSION CRASHES RECORDED” equals the number of unique, confirmed, persisted crash records for the active session.
+- Do not use the game's current round ID as the number of rounds Screen Earner recorded.
+- Do not use lifetime database row count, accessibility event count, screen scan count, live multiplier samples, predictions, or history-ribbon entries as session crashes.
+- Display separate fields: CURRENT GAME ROUND and SESSION CRASHES RECORDED.
+- If only two confirmed crashes exist, the session count must be 2.
+- If there are no confirmed records, show 0 and “Waiting for first confirmed crash”.
+- All calculations and summary cards must use the same active-session confirmed records.
+
+8. LIVE COLLECTION RULES — KEEP PREVIOUS FIXES
+Use one lifecycle:
+WAITING_FOR_ROUND → ROUND_STARTED → MULTIPLIER_RISING → CRASH_DETECTED → FINAL_MULTIPLIER_CONFIRMED → ROUND_RECORDED → WAITING_FOR_NEXT_ROUND.
+
+Record only a newly completed round after crash transition and final multiplier are confirmed. Never record live/rising samples, repeated reads, old history ribbon values, imported history, predicted values, unverified OCR/accessibility readings, or Screen Earner overlay content.
+
+Use game round ID where available; otherwise stable identity from session plus round lifecycle. Do not deduplicate solely by multiplier value. Enforce a transaction-safe unique key and idempotent inserts across callbacks, retries, UI refreshes and service restarts.
+
+The game's own Round History panel must be HISTORY_ONLY. Opening, closing, scrolling or refreshing it must never create live records, update LAST CRASH, change current ROUND, trigger live alarms, or evaluate old values as new signals.
+
+Use one pipeline:
+observe game → identify round → observe live multiplier without recording → detect crash → confirm final multiplier → stable round identity → transaction-safe deduplication → save once → update top status pill and session history → evaluate eligible live signals → notify once.
+
+The top pill, main overlay, Patterns, History and service observe the same repository/database. No parallel collectors.
+
+9. TOP STATUS PILL AND AP ICON — PRESERVE PREVIOUS REQUIREMENTS
+The red-circled top horizontal pill displays only:
+LAST CRASH [last confirmed crashed multiplier] | ROUND [current reliable game round ID].
+Never show rising live multiplier or predicted value as LAST CRASH. If no reliable round ID exists, show “ROUND: —”. If no crash is confirmed, show “LAST CRASH: —” or a clearly labelled persisted last confirmed crash.
+
+Make this top pill independently draggable and save/restore its position, clamped to usable screen bounds. Do not reset its position on accessibility events. Do not confuse it with the AP icon or main panel. Do not let it block game controls.
+
+10. REMOVE CONFIDENCE ENTIRELY
+Remove the “Confidence 96%” line/card from the AP overlay and all other user-facing screens. Do not replace it with another unsupported percentage or probability claim. Do not display fabricated confidence. If useful, a non-probabilistic “Pattern match” or “Rule match” label may be shown without a percentage, clearly indicating it is not a prediction probability.
+
+11. TESTS / ACCEPTANCE
+A. Start monitoring, then open Screen Earner Settings. Verify the service/collector remains alive. If game window remains accessible, confirm new crashes are recorded. If not, verify GAME_NOT_ACCESSIBLE/GAME_SUSPENDED and no fabricated records. Return to game and verify resume without duplicates.
+
+B. Open AP panel over game. Resize, drag, scroll, change settings, Save/Apply, collapse. Verify game remains visible and interactive, panel position/size persist, and monitoring does not restart.
+
+C. Start new session while old archived/database data exists. Verify current session starts at zero and no old game history appears. Record two new confirmed crashes; count must be exactly two. Verify current game round ID is not confused with session crash count.
+
+D. End Session & Clear. Verify active history, calculations, pending candidates and session counters are cleared. Start again and verify new session ID and zero records.
+
+E. Trigger repeated accessibility callbacks for one crash; verify one insert. Open/scroll game Round History; verify no live inserts. Record two genuine consecutive rounds with identical multipliers; retain both. Restart service mid-session; restore same session without duplicates.
+
+F. Verify confidence percentage is absent everywhere and all statistics match the unique confirmed active-session records.
+
+12. IMPLEMENTATION AND DELIVERABLES
+Inspect actual project files before editing: foreground service, AccessibilityService, monitoring engine/repository, AP icon overlay, red-circled top status pill, AP control/settings panel, session model, database/DAO, history/statistics screens and notifications.
+
+Modify existing architecture in place. Do not create parallel collectors, databases or competing sources of truth. Preserve all prior instructions and unrelated features.
+
+After implementation report:
+- Exact files changed.
+- How monitoring is independent of Activity/UI lifecycle.
+- Whether the game remains accessible with Settings open; what happens if Android/browser suspends it.
+- How the resizable overlay works.
+- How AP icon and top pill remain independent.
+- How new sessions start fresh and how End Session & Clear works.
+- How CURRENT GAME ROUND differs from SESSION CRASHES RECORDED.
+- Confirmation confidence is removed.
+- Test results for Settings during monitoring, resume, session clearing and duplicate prevention.
+- Remaining Android/device limitations.

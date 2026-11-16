@@ -1,0 +1,348 @@
+================================================================================
+PROJECT: SCREEN EARNER
+COMPLETE FLOATING AUTOMATION CONTROLLER — ANDROID NATIVE + MATERIAL DESIGN 3
+================================================================================
+
+CRITICAL ARCHITECTURAL PRINCIPLE:
+Screen Earner is exclusively a compact, floating Android automation utility—NOT a 
+game, simulator, sportsbook, or full-screen dashboard. The real game (e.g., 
+Aviator on BetPawa or SportyBet via Chrome or native apps) remains open and 
+primary on the user's screen at all times. Screen Earner operates as a lightweight, 
+always-on-top assistant above the active game.
+
+--------------------------------------------------------------------------------
+1. PROJECT OBJECTIVE & APPLICATION PURPOSE
+--------------------------------------------------------------------------------
+Build a professional, native Android application called SCREEN EARNER that acts 
+as an overlay automation controller for supported browser and mobile games 
+(Chrome, BetPawa, SportyBet).
+
+What Screen Earner DOES:
+- Provides a customizable, always-on-top floating control bubble.
+- Expands into a compact control panel (never full-screen during active play).
+- Spawns independent, draggable Bet and Cash Out floating shortcuts.
+- Monitors on-screen game states via authorized Accessibility and OCR services.
+- Executes automated, rule-based gestures mapped to user-calibrated targets.
+
+What Screen Earner DOES NOT Contain:
+- Aviator or any other betting game or simulator.
+- A sportsbook or separate full-screen betting interface.
+- Its own multiplier-generating engine or fabricated historical data.
+
+--------------------------------------------------------------------------------
+2. TECHNOLOGY STACK & BUILD SYSTEM
+--------------------------------------------------------------------------------
+- Frontend (Config/Settings UI): React + TypeScript
+- Design System: Material Design 3 (Material You)
+- Native Android Layer: Kotlin (real native services, not a WebView wrapper)
+- Overlay Rendering: WindowManager with TYPE_APPLICATION_OVERLAY
+- Screen Interaction: Android AccessibilityService & dispatchGesture()
+- Screen Recognition: OCR and image/node-based state recognition
+- Local Persistence: Room Database (with versioned migrations)
+- JS/Kotlin Communication: Strongly typed JavaScript/Kotlin bridge interfaces
+- Build System: Gradle (Command-line buildable; Android Studio NOT required)
+- CI/CD Pipeline: GitHub Actions (.github/workflows/android-apk.yml)
+- Minimum Android Version: Android 8.0 (API 26)
+
+--------------------------------------------------------------------------------
+3. ALWAYS-ON-TOP MAIN FLOATING BUBBLE
+--------------------------------------------------------------------------------
+The primary entry point is a compact, circular floating bubble that remains 
+visible over supported apps without obstructing system navigation bars or 
+display cutouts.
+
+Visual & Behavioral Design:
+- Diameter: ~58dp circular shape with subtle elevation and soft dark shadow.
+- Branding: Recognizable "SE" symbol or Screen Earner logo in White (#FFFFFF).
+- Colors: Primary Indigo (#6750A4) to Secondary Gradient (#8B5CF6), subtle 
+  translucent white border.
+- Transparency: User-adjustable opacity.
+- Movement: Smooth drag-and-drop anywhere on screen; remembers last position.
+- Gestures:
+  * Single Tap: Toggles the Compact Expandable Control Panel.
+  * Long Press (~700–900ms): Triggers haptic vibration and opens Settings.
+
+--------------------------------------------------------------------------------
+4. COMPACT EXPANDABLE CONTROL PANEL
+--------------------------------------------------------------------------------
+Tapping the main bubble expands a compact floating panel beside it. It must 
+occupy only a small portion of the display so the underlying game remains 
+clearly visible.
+
+Dimensions & Positioning:
+- Recommended Max Size: ~280dp width x 420dp height (adapts to screen bounds).
+- Smart Edge Detection: Automatically repositions away from screen edges so 
+  controls never clip off-screen.
+- Dismissal: Tapping outside the panel collapses it back to the bubble.
+
+Panel Contents (Compact Layout):
+1. ADD BET — Green (#16A34A) | Icon: add-circle
+2. ADD CASH OUT — Orange (#F59E0B) | Icon: account-balance-wallet / payments
+3. START — Emerald (#059669) | Icon: play-arrow
+4. PAUSE — Amber (#D97706) | Icon: pause
+5. RESUME — Blue (#2563EB) | Icon: play-circle
+6. QUIT — Red (#DC2626) | Icon: stop-circle
+7. EXIT — Neutral/Dark Red | Icon: exit-to-app / close
+8. SETTINGS — Indigo (#6750A4) | Icon: settings
+9. Live Telemetry Readout:
+   - Game detection & readiness status
+   - Current visible multiplier
+   - Recent completed multiplier history
+   - Active trigger counters (consecutive < 2.00x count; > 10.00x wait count)
+
+CRITICAL DISTINCTION — QUIT VS. EXIT:
+- QUIT: Immediately stops active automation and cancels pending actions, but 
+  keeps the floating bubble/utility active on screen with configurations intact.
+- EXIT: Stops automation, removes all floating overlays, terminates the 
+  foreground service, and closes the utility (preserves saved DB configs). 
+  Must prompt for confirmation if an automation session is currently active.
+
+--------------------------------------------------------------------------------
+5. INDEPENDENT DRAGGABLE BET & CASH OUT SHORTCUTS
+--------------------------------------------------------------------------------
+Selecting ADD BET or ADD CASH OUT spawns an independent overlay button separate 
+from the main bubble. Multiple instances are supported.
+
+Shortcut Capabilities:
+- Independent drag-and-drop placement with persistently saved coordinates.
+- Resizable dimensions, adjustable transparency, custom colors, and editable labels.
+- Individual action assignment and ability to enable/disable or remove.
+
+Default Appearance:
+- BET Button: Background #16A34A, White text ("BET"), add-circle icon.
+- CASH OUT Button: Background #F59E0B, White text ("CASH OUT"), payments icon.
+
+Decoupled Target Calibration (CRITICAL):
+- A floating shortcut's visual screen position is stored SEPARATELY from its 
+  underlying game-control target coordinates.
+- Calibration Mode allows users to pinpoint the actual game control on screen 
+  and save that target, while moving the floating shortcut anywhere convenient.
+
+--------------------------------------------------------------------------------
+6. OPERATING MODES: EDIT MODE VS. AUTOMATION MODE
+--------------------------------------------------------------------------------
+Provide a clearly visible mode indicator at all times.
+
+EDIT MODE:
+- Displays visible drag handles on all floating shortcuts.
+- Enables dragging, resizing, adding/removing buttons, appearance edits, 
+  action assignments, target calibration, and saving layouts.
+
+AUTOMATION MODE:
+- Locks floating shortcut positions to prevent accidental dragging during play 
+  (user can manually unlock at any time).
+- Enables Start, Pause, Resume, and Quit controls.
+- Executes only configured, verified actions with live visual feedback and 
+  duplicate-tap prevention.
+
+--------------------------------------------------------------------------------
+7. LONG-PRESS SETTINGS & CONFIGURATION (REACT + MD3)
+--------------------------------------------------------------------------------
+Accessible via an ~800ms long press on the main bubble or via the panel shortcut:
+
+A. Appearance:
+   - Bubble size, shortcut button size, transparency, button shapes, icon styles.
+   - Main bubble color, individual action colors, animation speed (150–250ms).
+   - Theme selection: Light, Dark, or System (Material You dynamic color support).
+
+B. Position & Layout:
+   - Save current layout, reset positions, lock/unlock toggle, edge snapping, 
+     and screen boundary/cutout safety rules.
+
+C. Button Management:
+   - Add, remove, rename, enable/disable buttons; assign actions; customize 
+     colors, icons, sizes, and target calibrations.
+
+D. Platform & Orientation Profiles:
+   - Dedicated profiles for BetPawa, SportyBet, and Custom setups.
+   - Each platform independently saves layouts for both Portrait and Landscape 
+     orientations.
+
+E. Setup & Overview (Main App Activity):
+   - When launched directly from the app drawer, provides clean Material Design 3 
+     cards for Permissions Setup, Strategy Configuration, Risk Limits, and 
+     Session Logs—without replacing the game during active overlay use.
+
+--------------------------------------------------------------------------------
+8. BUTTON ACTION ASSIGNMENTS
+--------------------------------------------------------------------------------
+Each floating shortcut can be assigned one of the following independent actions:
+- Place Bet — Panel 1
+- Cash Out — Panel 1
+- Place Bet — Panel 2
+- Cash Out — Panel 2
+- Toggle Auto Bet
+- Toggle Auto Cash Out
+- Start Strategy / Pause Strategy / Resume Strategy / Stop Strategy
+
+--------------------------------------------------------------------------------
+9. STRATEGY ENGINE SPECIFICATION
+--------------------------------------------------------------------------------
+The native Kotlin StrategyEngine must strictly enforce these rules while keeping 
+historical multiplier counters strictly separate from actual betting win/loss 
+outcomes (never treat past multipliers as guarantees of future results):
+
+STRATEGY 1 (Consecutive Low Multipliers):
+- Record verified completed multiplier history.
+- Count consecutive completed rounds with multipliers strictly below 2.00x.
+- Trigger after 8 consecutive qualifying rounds.
+- Begin configured betting progression on the subsequent round.
+- Double stake after each verified betting loss.
+- Stop progression after 2 consecutive verified betting wins, reset state, and 
+  wait for a new trigger.
+
+STRATEGY 2 (Post-High Multiplier Wait):
+- Detect a completed multiplier strictly above 10.00x.
+- Wait for 15 subsequent completed rounds while recording all 15 multipliers.
+- Begin configured betting progression immediately after the 15-round wait.
+- Apply the same stake progression (double on verified loss, stop & reset 
+  after 2 consecutive verified wins).
+
+MIXED STRATEGY:
+- Monitor Strategy 1 and Strategy 2 triggers independently in parallel.
+- Launch a single betting session when either trigger fires.
+- Prevent overlapping betting sessions or duplicate bets.
+- Reset trigger states cleanly according to the active strategy rules.
+
+--------------------------------------------------------------------------------
+10. AUTOMATIC GAME DETECTION & STATE VERIFICATION
+--------------------------------------------------------------------------------
+Platform-specific recognition for BetPawa Aviator and SportyBet Aviator:
+
+Tracked States:
+- Foreground app & browser/platform profile verification
+- Game loading vs. Waiting for next round vs. Betting window open
+- Bet submitted / Bet accepted / Bet cancelled
+- Flight in progress & real-time visible multiplier
+- Cash Out available / Cash-out completed / Round crashed
+
+Operational & Safety Rules:
+- Prefer accessible UI nodes where exposed; fall back to calibrated gesture 
+  dispatch and OCR verification.
+- Never assume a tap succeeded—verify the resulting game state before advancing.
+- When a supported game opens, verify UI readiness and display a compact status 
+  notification (if controls are missing, specify what is missing).
+- Never auto-start real-money betting solely upon opening the game; require 
+  explicit user authorization and configured strategy triggers.
+- If recognition confidence drops or the game leaves the foreground, pause 
+  automation immediately and notify the user.
+- Do not bypass platform security, authentication, or anti-automation rules.
+
+--------------------------------------------------------------------------------
+11. RISK MANAGEMENT & SAFETY CONTROLS
+--------------------------------------------------------------------------------
+Configurable hard limits enforced by native RiskManager:
+- Maximum single stake
+- Maximum session loss
+- Maximum total rounds per session
+- Maximum stake progression level
+- Session profit target (auto-stop when reached)
+- Minimum account balance threshold
+- Emergency Stop button
+
+Rules:
+- Limits cannot be bypassed by automatic stake progression.
+- Never claim multipliers are predictable or that any strategy guarantees profit.
+- Require explicit user confirmation prior to enabling real-money execution.
+
+--------------------------------------------------------------------------------
+12. MATERIAL DESIGN 3 COLOR SYSTEM & UI/UX STANDARDS
+--------------------------------------------------------------------------------
+Color Palette (Fallback when Material You dynamic color is unavailable):
+- Primary: #6750A4 (Indigo)          | Secondary: #625B71 (Muted Purple-Grey)
+- Tertiary: #7D5260 (Rose-Purple)    | Bet / Success: #16A34A (Green)
+- Cash Out: #F59E0B (Amber)          | Start: #059669 (Emerald)
+- Pause: #D97706 (Orange)            | Resume: #2563EB (Blue)
+- Stop / Quit: #DC2626 (Red)
+- Light Background: #F7F5FA          | Light Surface: #FFFFFF
+- Dark Background: #111318           | Dark Surface: #1D2026
+- Light Text: #191A20                | Dark Text: #E4E1E9
+
+UI/UX Standards:
+- Consistent 8dp grid spacing, rounded corners, and 150–250ms smooth transitions.
+- Never convey critical status by color alone (always pair with icons/labels).
+- Accessible content descriptions for screen readers and generous touch targets.
+- Low memory and battery footprint for background overlay services.
+
+--------------------------------------------------------------------------------
+13. PERMISSIONS, BACKGROUND LIFECYCLE & PERSISTENCE
+--------------------------------------------------------------------------------
+Permissions Management:
+- Progressive permission onboarding explaining why each permission is needed:
+  * SYSTEM_ALERT_WINDOW (Display over other apps)
+  * BIND_ACCESSIBILITY_SERVICE (Screen reading & gesture dispatch)
+  * FOREGROUND_SERVICE & POST_NOTIFICATIONS (Persistent status notification)
+  * MediaProjection / Screen Capture (Only if OCR fallback requires it)
+  * INTERNET & VIBRATE
+
+Lifecycle Resilience:
+- Gracefully handle screen rotation, app switching, browser reloads, screen 
+  locking, permission revocation, and Android battery optimization restrictions.
+
+Room Database Persistence:
+- Persist button definitions, visual positions, calibrated target coordinates, 
+  styles, platform profiles, portrait/landscape layouts, strategies, verified 
+  multiplier/betting logs, and risk limits across app updates and restarts.
+
+--------------------------------------------------------------------------------
+14. PROJECT DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+screen-earner/
+├── web/
+│   └── src/
+│       ├── components/
+│       ├── floating-menu/
+│       ├── button-manager/
+│       ├── strategies/
+│       ├── settings/
+│       └── theme/
+├── android/
+│   └── app/src/main/
+│       ├── java/com/screenearner/
+│       │   ├── MainActivity.kt
+│       │   ├── FloatingBubbleService.kt
+│       │   ├── CompactControlPanel.kt
+│       │   ├── DraggableButtonService.kt
+│       │   ├── AccessibilityController.kt
+│       │   ├── GameDetection.kt
+│       │   ├── AutomationEngine.kt
+│       │   ├── StrategyEngine.kt
+│       │   ├── RiskManager.kt
+│       │   └── database/
+│       └── AndroidManifest.xml
+└── .github/
+    └── workflows/
+        └── android-apk.yml
+
+--------------------------------------------------------------------------------
+15. GITHUB ACTIONS CI/CD WORKFLOW (.github/workflows/android-apk.yml)
+--------------------------------------------------------------------------------
+Automated build pipeline without requiring Android Studio:
+1. Checkout repository code.
+2. Set up required JDK (JDK 17) and Node.js environment.
+3. Install Android SDK command-line tools, accept licenses, and install build-tools.
+4. Install frontend dependencies (`npm ci`) and build the React + TypeScript bundle.
+5. Copy web assets into Android assets and compile Kotlin sources via Gradle.
+6. Assemble Debug APK (`./gradlew assembleDebug`).
+7. Assemble & sign Release APK (`./gradlew assembleRelease`) when keystore secrets 
+   are configured in GitHub Secrets.
+8. Upload Debug and Release APKs as downloadable GitHub Actions artifacts with 
+   clear build logs.
+
+--------------------------------------------------------------------------------
+16. PRE-RELEASE VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+[ ] Main bubble renders over Chrome/BetPawa/SportyBet and drags smoothly.
+[ ] Single tap toggles compact panel; tapping outside collapses it.
+[ ] Long press (~800ms) triggers haptic feedback and opens Settings.
+[ ] Compact panel never exceeds ~280x420dp and repositions near screen edges.
+[ ] ADD BET and ADD CASH OUT spawn independent draggable shortcuts.
+[ ] Shortcut screen coordinates and calibrated target coordinates save separately.
+[ ] QUIT stops automation while keeping the overlay; EXIT closes all overlays.
+[ ] Layouts persist across restarts, platform switches, and screen rotations.
+[ ] Strategy 1 (8x <2.00x), Strategy 2 (1x >10.00x + 15 wait), and Mixed rules 
+    execute accurately without conflating historical multipliers with bet outcomes.
+[ ] Risk limits enforce hard stops and cannot be bypassed by stake progression.
+[ ] Automation pauses automatically if game recognition fails or app backgrounds.
+[ ] GitHub Actions builds valid, installable Debug and Release APKs.
+================================================================================

@@ -1,0 +1,261 @@
+SCREEN EARNER — FIX MULTIPLIER HISTORY DUPLICATION AND INVALID
+CONFIDENCE
+
+TARGET AREAS Multiplier collector, game-history parser, database
+insertion, live monitoring pipeline, Patterns screen, strategy/signal
+engine, and confidence display.
+
+OBJECTIVE Fix the root cause of repeated multipliers appearing in the
+monitor within seconds. Also correct the confidence display so the app
+never presents an unsupported percentage as predictive accuracy.
+Preserve all existing monitoring, strategy, alarm, notification,
+floating-overlay, and background-service functionality.
+
+1.  FIX THE ROOT CAUSE
+
+The collector must never treat every screen observation as a new game
+round.
+
+The current behavior suggests that the same visible game-history ribbon
+is being processed repeatedly. Accessibility events, polling cycles,
+overlay redraws, or opening the history panel may trigger another read
+of the same multipliers.
+
+Correct the collection architecture. Do not merely hide duplicate values
+in the UI.
+
+2.  SEPARATE LIVE ROUNDS FROM HISTORICAL HISTORY
+
+Implement two distinct collection sources:
+
+-   LIVE_ROUND: captures a newly completed game round from the live game
+    flow.
+-   HISTORY_IMPORT: reads existing multipliers from the game’s
+    historical history ribbon.
+
+Opening, closing, refreshing, or scrolling the history ribbon must never
+cause previously collected rounds to be recorded as new live rounds.
+
+Historical imports must not trigger new-round alarms, strategy entries,
+or live pattern events unless explicitly configured as a separate
+history-analysis operation.
+
+3.  INTRODUCE STABLE ROUND IDENTIFICATION
+
+Every recorded round must have a stable unique identity.
+
+Use this priority:
+
+1.  Use the game’s actual round ID when available.
+2.  Otherwise derive a stable identity from the game session, original
+    round position/order, observation context, and completion
+    transition.
+3.  Never use the multiplier value alone as the unique identifier.
+
+Two legitimate consecutive rounds can both produce 2.10x. Both must be
+retained as separate rounds.
+
+Repeated observations of the same round must resolve to the same
+identity. Do not generate a new ID merely because the same screen
+content was observed again.
+
+If the available screen data cannot reliably distinguish two rounds,
+mark the observation as uncertain and do not silently invent a round
+identity.
+
+4.  MAKE DATABASE INSERTION IDEMPOTENT
+
+Before inserting a round:
+
+-   Check whether its stable identity already exists.
+-   If it exists, update only permitted metadata; do not create another
+    round.
+-   If it does not exist, insert it once.
+-   Enforce uniqueness at database level using a unique index or
+    equivalent transaction-safe constraint.
+-   Make concurrent accessibility callbacks safe.
+-   Ensure retries cannot create duplicate records.
+
+Do not rely only on an in-memory list, a short debounce timer, or
+filtering repeated multiplier values.
+
+5.  DETECT HISTORY-RIBBON CHANGES CORRECTLY
+
+Maintain a snapshot of the previously observed history.
+
+When a new snapshot arrives:
+
+-   Compare it with the previous snapshot.
+-   Identify genuinely new rounds only when there is sufficient
+    evidence.
+-   Recognize unchanged history as an unchanged observation.
+-   Handle history-list scrolling and visible-window changes without
+    reimporting existing rounds.
+-   Preserve the game’s correct chronological order.
+-   Do not assume every newly visible multiplier is a new game result.
+-   Do not treat a reordered or partially visible history window as a
+    new sequence of rounds.
+
+When the user manually opens the game history, import only previously
+unseen rounds. Opening the history panel must not replay alarms or
+create live-round events for already recorded rounds.
+
+6.  CORRECT THE PATTERNS GRID
+
+The Patterns screen must read from the authoritative unique-round
+database.
+
+It must:
+
+-   Display each genuine round once.
+-   Maintain correct chronological order.
+-   Refresh without inserting records.
+-   Never randomly rearrange historical rounds.
+-   Distinguish the current live multiplier from completed rounds.
+-   Exclude unverified observations and repeated screen captures.
+-   Show the source and verification status where useful.
+-   Keep two separate legitimate rounds even when their multiplier
+    values are identical.
+
+The grid must not fabricate a sequence by repeatedly sampling the same
+visible history ribbon.
+
+7.  FIX THE 96% CONFIDENCE DISPLAY
+
+The screenshots show “Confidence 96%” while the collector is producing
+repeated and potentially misordered observations. This percentage must
+not be presented as genuine predictive confidence unless it is
+calculated by a validated and properly calibrated probability model.
+
+Implement the following:
+
+-   Trace exactly where the current confidence percentage is generated.
+-   Identify whether it is a hardcoded value, arbitrary score,
+    pattern-match score, heuristic, or statistically calibrated
+    probability.
+-   Remove any hardcoded or fabricated confidence percentage.
+-   Do not convert a pattern-match score directly into a probability
+    percentage.
+-   Do not label a signal “96% likely”, “96% confidence”, or equivalent
+    unless the model has been validated against an adequate,
+    representative set of historical outcomes and its probability
+    calibration has been tested.
+-   If the existing calculation is only a heuristic, label it
+    accurately, for example “Pattern match score” or “Rule match”, and
+    explain that it is not a probability of the next result.
+-   If there is no defensible score, display “Not statistically
+    validated” or omit the percentage.
+-   Show the number of valid, unique observations used by the analysis.
+-   Exclude duplicate, uncertain, imported-history replay, and
+    incomplete observations from live predictive calculations unless a
+    clearly defined analysis mode intentionally includes them.
+-   Do not claim that a detected pattern predicts or guarantees the next
+    multiplier.
+-   Keep the signal explanation transparent: show which observed rule or
+    condition matched.
+-   Do not invent a replacement percentage simply to keep the existing
+    UI layout.
+
+If a genuine probability model already exists, audit its
+training/evaluation data, sample size, calibration, out-of-sample
+performance, and update process before displaying its probability. If
+those requirements are not met, use a non-probabilistic label.
+
+8.  ADD DIAGNOSTIC LOGGING
+
+For every observation, log:
+
+-   Observation timestamp.
+-   Collection source: LIVE_ROUND or HISTORY_IMPORT.
+-   Detected multiplier.
+-   Round identity.
+-   Whether it was inserted, updated, or rejected as a duplicate.
+-   Reason for rejection.
+-   History snapshot comparison result.
+-   Verification status.
+-   Whether the observation was eligible for strategy analysis or
+    notification.
+
+Example:
+
+15:24:51.000 | HISTORY_IMPORT | 1.36x | ROUND_001 | INSERTED
+
+15:24:51.300 | HISTORY_IMPORT | 1.36x | ROUND_001 | DUPLICATE_IGNORED
+
+15:24:51.600 | HISTORY_IMPORT | 1.36x | ROUND_001 | DUPLICATE_IGNORED
+
+Example confidence diagnostic:
+
+PATTERN_MATCH | score=0.82 | calibrated_probability=UNAVAILABLE |
+label=Pattern match score
+
+9.  KEEP ONE AUTHORITATIVE COLLECTION PIPELINE
+
+Use one controlled pipeline:
+
+Observation → classify source → validate observation → identify round →
+deduplicate → persist transactionally → update history UI → evaluate
+eligible live signals → issue notification only when appropriate.
+
+Do not allow the overlay, history screen, accessibility listener, and
+background service to independently insert the same round.
+
+UI components must observe the database; they must not create records as
+a side effect of rendering or refreshing.
+
+10. REQUIRED TESTING
+
+Run and document all of these tests:
+
+1.  Keep the history ribbon closed while monitoring.
+2.  Open the history ribbon manually.
+3.  Leave it open for at least 30 seconds while accessibility events
+    continue.
+4.  Close and reopen it.
+5.  Scroll through older history.
+6.  Switch to another app and return.
+7.  Open Screen Earner Settings and return to the game.
+8.  Receive two legitimate consecutive rounds with identical
+    multipliers.
+9.  Refresh the Patterns screen repeatedly.
+10. Restart the monitoring service and verify that previously stored
+    rounds are not inserted again.
+11. Confirm historical imports do not trigger live-round alarms.
+12. Verify the confidence display does not show an unsupported
+    percentage.
+
+EXPECTED RESULTS
+
+-   Each genuine game round appears exactly once.
+-   Repeated observations of the same round are ignored.
+-   Two genuinely separate rounds with the same multiplier are both
+    preserved.
+-   Opening or scrolling game history does not create duplicate rounds.
+-   The Patterns grid remains stable and chronologically correct.
+-   Historical imports do not masquerade as live rounds.
+-   Unsupported predictive confidence percentages are removed or
+    relabelled accurately.
+-   No unrelated monitoring, strategy, alarm, notification, overlay, or
+    background functionality is removed.
+
+IMPLEMENTATION RULE
+
+Inspect the existing project and identify the actual collector, parser,
+database, signal engine, and UI files before editing. Modify the
+existing architecture in place. Do not create parallel collectors or
+duplicate databases. Preserve unrelated functionality and existing
+design unless a change is necessary for this correction.
+
+DELIVERABLES
+
+After implementation, report:
+
+1.  Exact files changed.
+2.  Root cause found.
+3.  How stable round identity is generated.
+4.  How database-level deduplication works.
+5.  How history imports are separated from live rounds.
+6.  Where the old 96% value came from and what replaced it.
+7.  Test results, including the two-identical-consecutive-rounds test.
+8.  Any remaining limitations where the game does not expose enough
+    information to identify a round reliably.

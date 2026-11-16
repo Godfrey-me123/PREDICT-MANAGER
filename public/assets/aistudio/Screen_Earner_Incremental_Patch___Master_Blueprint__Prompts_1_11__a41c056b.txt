@@ -1,0 +1,293 @@
+================================================================================
+CRITICAL AI BUILDER DIRECTIVE — INCREMENTAL PATCH ONLY (DO NOT REBUILD FROM SCRATCH)
+================================================================================
+IMPORTANT: Do NOT delete, overwrite, or rebuild the existing Screen Earner
+project structure, working floating bubble, or already-completed components.
+
+Inspect the existing codebase first, identify ONLY the missing features and
+broken behaviors listed in Prompts 1–11 below, and apply targeted, surgical
+fixes and additions while keeping every currently working component intact.
+================================================================================
+
+--------------------------------------------------------------------------------
+PROMPT 1: PROJECT ARCHITECTURE & PURPOSE (NO MOCKUPS OR SIMULATORS)
+--------------------------------------------------------------------------------
+1. Utility, Not a Game:
+   - Screen Earner is a headless/utility native Android automation agent operating
+     over external browser applications (e.g., Chrome running BetPawa or SportyBet
+     Aviator).
+   - Ensure zero simulated phone frames, device bezels, fake game screens, or
+     hardcoded/random multiplier generators remain anywhere in the UI or Kotlin
+     codebase.
+   - Multipliers and round states (BETTING_OPEN, IN_FLIGHT, CRASHED) must ONLY
+     come from real-time screen inspection (Android AccessibilityService node
+     tree parsing + OCR). When no game is open, display "--.--x | WAITING".
+
+2. Zero Full-Screen Blocking Windows:
+   - MainActivity serves strictly as a clean setup, permissions, and strategy
+     configuration dashboard.
+   - Tapping "Launch Floating SE Icon" starts the native Kotlin foreground
+     service (FloatingBubbleService) and immediately minimizes the setup screen
+     (moveTaskToBack(true)) so the user returns directly to their real phone
+     home screen or browser.
+
+3. Non-Blocking Touch Physics:
+   - All floating overlay windows use WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+     with WRAP_CONTENT dimensions, FLAG_NOT_FOCUSABLE, and FLAG_NOT_TOUCH_MODAL.
+   - All touches outside the floating SE bubble or action hands pass straight
+     through to Chrome, BetPawa, or SportyBet underneath without any dimmed or
+     touch-blocking backdrop.
+
+
+--------------------------------------------------------------------------------
+PROMPT 2: COMPACT FLOATING UI, 60FPS SMOOTH DRAGGING & SAFE SETTINGS SAVING
+--------------------------------------------------------------------------------
+1. Main SE Floating Bubble:
+   - A compact 56dp x 56dp circular indigo bubble (#6750A4) with crisp white "SE"
+     branding and a live status indicator dot.
+
+2. Universal Smooth 60fps Dragging (Fix Lag/Stuttering During Gameplay):
+   - Every floating overlay window—the main SE bubble, the expanded SE utility
+     menu, every spawned BET or CASH OUT hand, and any open settings card—must
+     attach a responsive drag OnTouchListener that updates WindowManager layout
+     coordinates (params.x, params.y) smoothly across the entire screen.
+   - Decouple AccessibilityService node scanning and OCR from the Main UI Thread
+     by executing heavy parsing on Dispatchers.Default and throttling UI state
+     emissions to 100ms–150ms intervals so dragging never stutters during active
+     gameplay.
+
+3. Smart Full-Page vs. Compact Settings Switching & Crash-Free Saving:
+   - Opening Settings inside MainActivity expands a clean full-page editor for
+     deep strategy and risk configuration.
+   - Wrap all save operations, SharedPreferences/Room database writes, and
+     numeric field parsing (stakes, multipliers, thresholds, coordinates) in
+     robust try/catch blocks with null/empty-string validation so clicking "Save"
+     NEVER throws a NumberFormatException or NullPointerException crash.
+   - Tapping "Save Settings" safely persists data, displays a brief confirmation
+     Toast, and automatically minimizes the main app back to the small floating
+     SE utility overlay so the user can immediately interact with their game.
+
+
+--------------------------------------------------------------------------------
+PROMPT 3: SITE URL DETECTION & PLATFORM PROFILES (BETPAWA VS. SPORTYBET)
+--------------------------------------------------------------------------------
+1. Active Browser Address Bar & DOM Inspection:
+   - GameDetection.kt must inspect the active browser URL bar node (such as
+     com.android.chrome:id/url_bar or visible address EditText/TextView) along
+     with on-screen game branding.
+   - Explicitly identify and display the exact active platform in the overlay:
+     * "BetPawa Aviator" (matches betpawa.co.tz, betpawa.com, betpawa.co.zm, etc.)
+     * "SportyBet Aviator" (matches sportybet.com, etc.)
+   - Automatically load the saved button target coordinates, currency defaults,
+     and platform calibration profile associated with the detected site.
+
+
+--------------------------------------------------------------------------------
+PROMPT 4: REAL-TIME MULTIPLIER SYNC & BOUNDED SCROLLABLE HISTORY BOX
+--------------------------------------------------------------------------------
+1. Live Center Multiplier Reflection:
+   - Separate the large central live round multiplier (e.g., 1.27x, 3.01x) from
+     the horizontal history ribbon at the top of the game using node screen
+     bounds (Rect coordinates and text scale).
+   - Broadcast every live multiplier tick immediately to the floating overlay via
+     StateFlow so the readout mirrors the climbing plane in real time and resets
+     cleanly upon "Flew Away" / crash.
+
+2. Official Site History Ribbon Sync & Timestamped Crash Log:
+   - Scrape the site's top history ribbon (e.g., 3.42x, 5.31x, 1.25x, 15.74x)
+     directly into Screen Earner's history store, and record every newly
+     crashed round with its exact HH:mm:ss timestamp into Room Database so Crash
+     History never stays stuck at 0.
+
+3. Bounded, Scrollable History Box (No Box Expansion):
+   - Render the history list inside a fixed-height scrollable container
+     (maxHeight = 140.dp with verticalScroll enabled).
+   - Never allow the history box to expand or push action buttons off-screen;
+     older entries remain neatly scrollable up and down inside the fixed box.
+
+4. Time-Filtered Statistical Breakdown & Big Multiplier Spotlight:
+   - Aggregate multiplier analytics across rolling windows: 30 minutes, 1 hour,
+     3 hours, and 5 hours.
+   - Display total rounds plus exact counts and timestamps for multipliers
+     below 2.00x, above 50.00x, and above 100.00x.
+   - Highlight the highest recorded multiplier within the last 1 hour alongside
+     its exact crash timestamp.
+
+
+--------------------------------------------------------------------------------
+PROMPT 5: LOCAL CURRENCY AUTO-DETECTION (TZS / TANZANIA) & EDITABLE STAKES
+--------------------------------------------------------------------------------
+1. Auto-Detected Currencies & Country Selector:
+   - Remove hardcoded USD ($) symbols. Automatically detect local currency from
+     the active game balance readout and domain (e.g., betpawa.co.tz or balance
+     "10.18 TZS" sets currency to TZS — Tanzanian Shilling; also support ZMW,
+     KES, UGX, NGN, GHS, USD).
+   - Provide a Country / Currency Selector in Settings allowing manual currency
+     selection or Auto-Detect mode.
+
+2. Editable Stake Amounts:
+   - Format all stakes, incremental progression steps, profit targets, and loss
+     limits in the active local currency (e.g., 400.00 TZS).
+   - Allow direct editing of base stake amounts, quick-stake increments, and
+     maximum stake caps in both the full Settings screen and the compact Bet
+     hand settings popup.
+
+
+--------------------------------------------------------------------------------
+PROMPT 6: AUTOMATED HANDS, SINGLE-TAP SETTINGS & SITE BUTTON STATE MACHINE
+--------------------------------------------------------------------------------
+1. Permanent Action Roles & Single-Tap Settings:
+   - Spawned BET hands are permanently bound to placing bets (ACTION_PLACE_BET).
+   - Spawned CASH OUT hands are permanently bound to cashing out (ACTION_CASH_OUT).
+   - Single-tapping any floating BET or CASH OUT hand immediately opens a
+     compact, draggable settings popup next to that button featuring:
+     * "Set Screen Target": Captures exact physical screen coordinates
+       (targetX, targetY) on the underlying website button independently of
+       where the floating hand icon rests.
+     * Execution parameters (stake/panel assignment for Bet; auto-cashout
+       target multiplier for Cash Out).
+     * "Test Hand Now": Dispatches a real test tap via dispatchGesture() to
+       verify physical button activation.
+
+2. Real Site Button State Awareness:
+   - Inspect the game's actual action button text and state in real time:
+     * IDLE / READY TO BET ("Bet" — Green button): Site is ready for entry.
+     * BET QUEUED ("Cancel" / "Waiting for next round" — Red button): Bet is
+       accepted; do not click Bet again while "Cancel" is displayed.
+     * CASH OUT AVAILABLE ("Cash Out" — Orange button): Round is in flight;
+       CASH OUT hand executes when the live multiplier reaches target.
+
+3. Self-Interception Prevention & Accessibility Crash Protection:
+   - Temporarily apply WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE to all
+     floating overlay views for 100ms during dispatchGesture() execution so the
+     floating hand icon never intercepts its own tap meant for the site button.
+   - Wrap onAccessibilityEvent() and onServiceConnected() in top-level
+     try/catch blocks on the Main Looper, guard null rootInActiveWindow nodes,
+     and verify android:canPerformGestures="true" so Android never shuts down
+     the AccessibilityService.
+
+
+--------------------------------------------------------------------------------
+PROMPT 7: EXCLUSIVE STRATEGY ENGINE & 3-MINUTE TIMEOUT GUARD
+--------------------------------------------------------------------------------
+1. Non-Overlapping Strategy Lock:
+   - Only one strategy session may operate at any given moment. Once a strategy
+     triggers and enters a cycle, the Strategy Engine locks against competing
+     triggers until the active cycle finishes or resets.
+
+2. 3-Minute Grace Period & Auto-Cancellation:
+   - If an active betting session runs longer than 3 minutes, the engine checks
+     whether space/rounds are available to continue cleanly.
+   - If betting is still ongoing after 3 minutes, cancel all pending/active
+     betting actions for that cycle, terminate the session gracefully, reset
+     counters, and wait for a brand new trigger cycle.
+
+3. Comprehensive Editable Strategy Suite:
+   - Users can toggle any combination of strategies and edit all thresholds:
+     * Quick Recovery: After 2, 3, 5, or 7 consecutive losses -> fetch 2 wins.
+     * Standard Recovery: After 9 or 14 consecutive losses -> fetch 2 wins.
+     * Multiplier-Range Waiting: Above 10x and below 100x (wait 10 mins ->
+       fetch 2 wins); Above 100x and below 1000x (wait 5 mins -> fetch 2 wins).
+     * High-Multiplier Loss Rule: On a loss above 13.00x, double stake with
+       same target; if 3 such losses occur within 1 hour and minute >= 50,
+       force continuation within risk caps.
+     * Stake Progression Mode: Choose between Add Amount (fixed increment) or
+       Double Amount (2x stake) after each verified loss; reset after 2
+       consecutive verified wins.
+
+
+--------------------------------------------------------------------------------
+PROMPT 8: LIVE STEP-BY-STEP DIAGNOSTIC NOTIFICATIONS
+--------------------------------------------------------------------------------
+1. Real-Time Agent Status Ticker:
+   - Display a compact, live status banner inside the SE overlay (with optional
+     brief toast updates) reporting every step the agent performs in real time:
+     * "Game detected: BetPawa Aviator"
+     * "Game active — Plane in flight (2.14x)"
+     * "Fetching buttons... Bet found at (540, 1420), Cash Out found at (780, 1420)"
+     * "Fetching current balance... 10.18 TZS"
+     * "Fetching stake to edit... Updating stake to 400.00 TZS"
+     * "All done. Ready."
+     * "Checking strategy for current game state..."
+     * "Button state: BET (Green) -> Placing bet now"
+     * "Button state: CANCEL (Red) -> Waiting for round start"
+     * "Button state: CASH OUT (Orange) -> Waiting for 2.00x target"
+
+
+--------------------------------------------------------------------------------
+PROMPT 9: LIVE STAKE INPUT FETCHING & ACCOUNT BALANCE DETECTION
+--------------------------------------------------------------------------------
+1. Fetching Current Account Balance:
+   - Continuously parse the user's live balance from the top header of the
+     active Aviator screen (e.g., "10.18 TZS") via Accessibility node text and
+     OCR fallback.
+   - Sync the balance immediately to the overlay telemetry ("Fetching current
+     balance... 10.18 TZS") and enforce the Minimum Balance Requirement by
+     blocking bets whenever the balance falls below the next required stake.
+
+2. Fetching & Editing the Live Stake Field Directly on the Site:
+   - Scan the active Bet panel (Panel 1 / Panel 2) to locate the exact stake
+     input box (EditText / numeric field) and adjacent +/- adjustment controls.
+   - Before executing any automated bet, report "Fetching stake to edit..." in
+     the status ticker and read the current stake value on screen.
+   - Whenever the strategy requires a new base stake, Add Amount, or Double
+     Amount progression, directly update the website's stake input field using
+     AccessibilityNodeInfo.ACTION_SET_TEXT (with clipboard ACTION_PASTE or
+     calibrated +/- gesture taps as fallback).
+   - Re-read the stake box immediately after editing to confirm the site
+     accepted the exact updated stake amount before triggering the BET hand.
+
+
+--------------------------------------------------------------------------------
+PROMPT 10: NEVER-SLEEP SCREEN MODE & SCHEDULED OPERATING HOURS
+--------------------------------------------------------------------------------
+1. Never-Sleep Screen Keep-Awake Mode:
+   - Add a "Keep Screen Awake (Never Sleep)" toggle in Settings and the quick
+     overlay settings card.
+   - When enabled and automation is active, apply WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+     on the overlay/service window (and acquire a safe PowerManager.SCREEN_DIM_WAKE_LOCK
+     or PARTIAL_WAKE_LOCK only during scheduled active windows, releasing cleanly
+     when stopped) so the phone display never dims out or locks while the agent
+     is monitoring rounds.
+
+2. Scheduled Operating Hours (Start Time & End Time):
+   - Add a "Scheduled Operating Window" setting allowing the user to pick:
+     * Enable/Disable Schedule toggle
+     * Start Operating Time (e.g., 08:00) and Stop Operating Time (e.g., 23:00),
+       supporting overnight ranges (e.g., 22:00 to 04:00).
+   - Behavior Outside Chosen Hours:
+     * Automatically pause automated betting when outside the chosen hours,
+       release the screen wake lock so the phone can sleep normally, and show
+       "Standby — Outside scheduled hours (08:00–23:00)" in the SE status ticker.
+     * Automatically resume active monitoring and re-engage Never-Sleep mode
+       when the clock enters the user's scheduled hours.
+
+
+--------------------------------------------------------------------------------
+PROMPT 11: BACKGROUND ACTIVE-WINDOW PERMISSIONS, MULTI-TASKING & OFF-SCREEN EDGE DRAG
+--------------------------------------------------------------------------------
+1. Foreground & Background Active-Window Permissions & Multi-Tasking Persistence:
+   - Declare and request all required foreground/background execution permissions
+     in AndroidManifest.xml and the Permissions Setup card:
+     * FOREGROUND_SERVICE & FOREGROUND_SERVICE_SPECIAL_USE / DATA_SYNC
+     * REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (Unrestricted Background Activity)
+     * SYSTEM_ALERT_WINDOW & BIND_ACCESSIBILITY_SERVICE (with multi-window /
+       split-screen / picture-in-picture window inspection enabled via
+       accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows")
+   - Multi-Window / Split-Screen Active Window Fetching:
+     * Inspect AccessibilityService.windows (not only rootInActiveWindow) so
+       Screen Earner continues scanning the browser window holding BetPawa or
+       SportyBet in the background or split-screen even while the user interacts
+       with another app (e.g., WhatsApp, Telegram, or a second tab) on the rest
+       of the screen.
+
+2. Unclamped Off-Screen Dragging (Drag Out of Sight / Beyond Phone Frame Limits):
+   - Add WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS to all draggable
+     floating overlay windows (the SE bubble, expanded SE utility panel,
+     BET/CASH OUT hands, and compact settings popups).
+   - Remove any screen-edge clamping inside the drag OnTouchListener so the
+     user can touch, hold, and drag any overlay window partially out of sight
+     beyond the left, right, top, or bottom edges of the physical phone screen
+     (leaving only a small grab edge visible) to free up maximum screen space
+     while dealing with other apps.
+================================================================================

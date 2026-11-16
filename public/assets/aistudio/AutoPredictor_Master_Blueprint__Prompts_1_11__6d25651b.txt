@@ -1,0 +1,251 @@
+================================================================================
+AUTOPREDICTOR — MASTER SPECIFICATION & NUMBERED IMPLEMENTATION PROMPTS
+================================================================================
+
+CRITICAL AI BUILDER DIRECTIVE — INCREMENTAL PATCH ONLY (DO NOT REBUILD FROM SCRATCH)
+--------------------------------------------------------------------------------
+When applying this specification to the existing repository, DO NOT delete,
+overwrite, or rebuild the project from scratch. Preserve existing project
+configurations, Room database setups, and working Kotlin components where
+applicable. Patch the codebase module by module following Prompts 1 through 11
+sequentially. Do NOT reintroduce auto-clicking, stake modification, or automated
+game-control code into the main workflow.
+
+================================================================================
+SYSTEM ARCHITECTURE & CORE PURPOSE
+================================================================================
+1. Observation & Analysis Only:
+   - AutoPredictor is strictly a live game-monitoring, crash-history recording,
+     statistical pattern-recognition, and real-time Android notification system.
+   - It MUST NOT place bets, change stakes, or automatically click game controls.
+   - Users configure strategies; AutoPredictor watches the game, records actual
+     crash multipliers, recognizes patterns, counts occurrences, tracks hourly
+     sessions, and delivers real Android system notifications.
+
+2. Primary Modules:
+   1. Dashboard / Home
+   2. Live Game Monitor
+   3. Crash History
+   4. Pattern Recognition
+   5. Strategy Manager
+   6. Hourly Analysis
+   7. Notification Center
+   8. Settings
+
+3. Technical Stack & Separation of Concerns:
+   - Kotlin + Jetpack Compose with Material 3 (clean LIGHT THEME as default).
+   - Single authoritative Room database repository for permanent crash records,
+     hourly summaries, and pattern tracking history.
+   - StateFlow observable state management.
+   - Separate live multiplier state from completed crash records.
+   - Separate game detection from pattern analysis.
+   - Separate pattern analysis from notification delivery.
+   - Full Android 13+ lifecycle and permission compliance.
+
+================================================================================
+PROMPT 1 — COMPLETE APPLICATION REBRAND & MODULAR ARCHITECTURE SETUP
+================================================================================
+- Rebrand the application from Screen Earner to "AutoPredictor".
+- Inspect the entire existing Android project before making changes.
+- Preserve useful existing Kotlin components, permissions, and working
+  functionality, while removing all old auto-clicker, stake-editing, and
+  automated betting tap logic from the main workflow.
+- Establish the 8 primary navigation modules (Dashboard/Home, Live Game Monitor,
+  Crash History, Pattern Recognition, Strategy Manager, Hourly Analysis,
+  Notification Center, Settings) using Kotlin, Jetpack Compose, and a clean
+  Material 3 Light Theme.
+- Ensure zero simulated phone frames, fake game screens, or mock multiplier
+  generators exist in the codebase.
+- Preserve the existing lightweight floating utility strictly for live monitoring
+  and telemetry display.
+
+================================================================================
+PROMPT 2 — UNIVERSAL LIVE GAME DETECTION & GAME IDENTIFICATION ADAPTERS
+================================================================================
+- Implement a live game recognition system capable of monitoring supported
+  Aviator-style games in Android browsers (Chrome, etc.) and native apps.
+- Identify the actual displayed game name dynamically from verified screen
+  content (e.g., Aviator, JetX, Spaceman) rather than hardcoding Aviator.
+- Create a modular GameAdapter architecture:
+  * gameId
+  * displayedGameName
+  * supportedPlatforms
+  * detectGame()
+  * detectLiveMultiplier()
+  * detectCrashMultiplier()
+  * detectMultiplierColor()
+  * detectRoundState()
+  * detectRoundIdentifier()
+- Live Multiplier Detection Requirements:
+  1. Distinguish a live climbing multiplier from a completed crash multiplier.
+  2. Detect when a new round starts.
+  3. Detect when the multiplier is actively increasing.
+  4. Detect when the round crashes ("Flew Away" / round end).
+  5. Capture the final multiplier at the exact moment of crash.
+  6. Save each crash only once (strict deduplication).
+  7. Detect missing or unreadable values and display "LIVE DETECTION LOST"
+     rather than freezing or substituting a stale previous multiplier.
+  8. Display last successful detection timestamp, detection confidence,
+     platform name, and monitoring connection status.
+- Use AccessibilityService node inspection where exposed, and Android
+  MediaProjection + OCR/image processing with explicit user consent for
+  custom-rendered interfaces.
+
+================================================================================
+PROMPT 3 — ACTUAL MULTIPLIER COLORS & CRASH RECORDING ENGINE
+================================================================================
+- Record ONLY confirmed, completed crash multipliers in historical records.
+  Never save intermediate live multipliers, countdowns, or duplicate readings.
+- Color Sampling & Normalization:
+  * Read the actual displayed multiplier color via screenshot pixel analysis
+    and/or OCR bounding-box color sampling.
+  * Store BOTH the actual detected color (HEX string) and a normalized color
+    category (Pink, Red, Purple, Blue, Green, Yellow, Orange, Other) without
+    replacing the original color.
+- CrashRecord Room Entity Fields:
+  * id, gameId, gameName, multiplier, detectedColorHex, colorCategory,
+    crashTimestamp, hourStartTimestamp, sourcePackage, roundIdentifier,
+    confidence, manuallyCorrected.
+- Keep crash histories independent per game, survive process/service restarts
+  and orientation changes, and provide a manual correction option that preserves
+  the original detected value in an audit record.
+
+================================================================================
+PROMPT 4 — LIVE CRASH HISTORY CARD & BOUNDED MULTIPLIER GRID
+================================================================================
+- Build a visual crash-history grid reproducing the multiplier colors as
+  displayed in the monitored game.
+- Grid Layout & Bounds:
+  * Default: 5 rows x 8 columns (40 cells), configurable to 4 or 5 rows and
+    7 or 8 columns.
+  * Constrain the history list inside a fixed-height scrollable container
+    (maxHeight = 140.dp with verticalScroll enabled) so it never expands or
+    pushes controls off-screen.
+- Grid Behavior:
+  * New completed crashes appear in the newest slot; older entries shift
+    chronologically.
+  * Live multipliers and unfinished rounds NEVER enter or overwrite the grid.
+  * Tapping any cell reveals its exact timestamp and round details.
+  * Above the grid, show Game Name, Live Multiplier, Round Status, Monitoring
+    Duration, Latest Crash, and Latest Crash Time (or "MONITORING PAUSED" when
+    disconnected).
+
+================================================================================
+PROMPT 5 — ADVANCED STATISTICAL PATTERN RECOGNITION ENGINE
+================================================================================
+- Analyze completed crash records only (never live in-flight multipliers).
+- Configurable Categories (user-editable thresholds):
+  * Low: < 2.00x
+  * Boundary: == 2.00x
+  * Medium: > 2.00x and < 10.00x
+  * Big Multiplier: >= 10.00x
+- Pattern Detection Capabilities:
+  1. Consecutive low crashes (e.g., exact chains of 14 consecutive crashes
+     below 2.00x—never count scattered lows as one consecutive sequence).
+  2. Repeated big multipliers & big multiplier clusters.
+  3. Time gaps/intervals between big multipliers (e.g., 5 to 15 minutes apart).
+  4. Alternating low and medium sequences.
+  5. Repeated actual color sequences.
+  6. Distribution of crash multipliers & count of lows before a big multiplier.
+- Statistical Integrity:
+  * Track total occurrences, first occurrence, most recent occurrence, average/
+    shortest/longest intervals, current consecutive sequence, and historical
+    frequency per game.
+  * Never claim a pattern guarantees or predicts the next crash; use factual
+    language ("Observed X times", "Repeated in this session").
+
+================================================================================
+PROMPT 6 — 30-MINUTE AND HOURLY ANALYSIS ENGINE
+================================================================================
+- Independently compute and display:
+  1. Rolling 30-minute statistics.
+  2. Rolling 60-minute statistics.
+  3. Current calendar-hour statistics (default, e.g., 14:00–14:59 = Hour 14).
+  4. Previous completed-hour statistics.
+- Metrics per Window:
+  * Total completed rounds, counts and percentages of <2x, ==2x, 2x–10x,
+    and >=10x crashes, longest consecutive low sequence, qualifying big
+    multiplier intervals, average and median multipliers, and color distribution.
+- Hour Boundary Transitions:
+  * At the start of every new clock hour, finalize and save the previous
+    hourly summary, create a new hourly session, reset current-hour occurrence
+    counters, preserve all historical records, maintain rolling 30-minute data,
+    and trigger a New Hour notification.
+  * Display "INSUFFICIENT DATA" when sample sizes are too small.
+
+================================================================================
+PROMPT 7 — USER-DEFINED STRATEGY BUILDER & PARAMETER EDITOR
+================================================================================
+- Allow users to create, name, toggle, and edit custom monitoring strategies:
+  * Strategy A (Consecutive Lows): Editable low threshold (default 2.00x),
+    consecutive count (default 14), required occurrences per hour (default 2),
+    window (30m or 60m), and notification timing.
+  * Strategy B (Big Multiplier Intervals): Editable big threshold (default
+    10.00x), min interval (default 5 min), max interval (default 15 min), and
+    required hourly occurrences.
+  * Strategy C (Color Patterns): Custom sequences using actual detected
+    colors (e.g., Purple -> Purple -> Blue).
+- Validate all inputs safely inside try/catch blocks so saving settings never
+  crashes the app. Maintain independent occurrence histories per strategy.
+
+================================================================================
+PROMPT 8 — REAL ANDROID SYSTEM NOTIFICATION CENTER & CHANNELS
+================================================================================
+- Implement real Android system notifications outside the app:
+  * Channels: Critical Pattern Alerts, Hourly Analysis, Game Detection, and
+    Monitoring Errors.
+  * Request POST_NOTIFICATIONS permission on Android 13+ and visibly handle
+    denial.
+  * Prevent duplicate notifications for the same pattern occurrence, assign
+    unique notification IDs, respect Do Not Disturb, and open the relevant
+    game analysis screen when tapped.
+  * Maintain an in-app Notification Center history linked to underlying
+    pattern occurrence records.
+
+================================================================================
+PROMPT 9 — SMART ANALYSIS AGENT & STRATEGY EXPLANATIONS
+================================================================================
+- Build a statistical assistant that explains the currently active strategy
+  and live session telemetry in clear, plain language using real saved data.
+- Display active strategy rules, current occurrence count (e.g., "1 of 2"),
+  exact timestamps, current consecutive sequence length, remaining count to
+  trigger, 30-minute vs. hourly comparisons, and sample size confidence.
+- Never invent results, promise future outcomes, or generate unsupported
+  betting advice.
+
+================================================================================
+PROMPT 10 — NEVER-SLEEP SCREEN MODE & SCHEDULED OPERATING HOURS
+================================================================================
+- Never-Sleep Keep-Awake Mode:
+  * Add a "Keep Screen Awake (Never Sleep)" toggle in Settings and the quick
+    floating utility card.
+  * Apply WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON (and safe wake lock
+    management during active scheduled hours) so the screen never dims or
+    locks while AutoPredictor is actively monitoring rounds.
+- Scheduled Operating Hours:
+  * Allow users to configure Start Operating Time and Stop Operating Time
+    (supporting overnight ranges such as 22:00 to 04:00).
+  * Automatically pause monitoring and release wake locks outside chosen
+    hours ("Standby — Outside scheduled hours"), and automatically resume when
+    the schedule window opens.
+
+================================================================================
+PROMPT 11 — BACKGROUND PERMISSIONS, MULTI-TASKING & OFF-SCREEN EDGE DRAG
+================================================================================
+- Foreground & Background Active-Window Permissions:
+  * Declare and request FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC /
+    SPECIAL_USE, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (Unrestricted
+    Background Activity), SYSTEM_ALERT_WINDOW, and BIND_ACCESSIBILITY_SERVICE.
+  * Enable multi-window / split-screen inspection via
+    accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows" and
+    inspect AccessibilityService.windows so AutoPredictor continues tracking
+    the game window in the background or split-screen while the user uses
+    other apps.
+- Unclamped Off-Screen Edge-Parking Drag Physics (FLAG_LAYOUT_NO_LIMITS):
+  * Apply WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS to all draggable
+    floating windows and settings popups.
+  * Remove screen-boundary clamping in the drag OnTouchListener and offload
+    heavy parsing to Dispatchers.Default so the user can smoothly drag any
+    floating window partially out of sight beyond the phone screen frame to
+    maximize workspace.
+================================================================================

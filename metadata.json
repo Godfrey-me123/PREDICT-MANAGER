@@ -1,0 +1,6 @@
+{
+  "name": "Predict Manager",
+  "description": "Live crash game monitoring, actual multiplier color recording, bounded crash history grid, statistical pattern recognition, hourly analytics, and configurable alarm profiles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

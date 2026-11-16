@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Predict Manager</string>
+    <string name="accessibility_service_desc">Predict Manager Accessibility Service reads live crash game states, multiplier values, and crash history boards in supported browsers and apps to power statistical pattern tracking and real-time notifications without automating bets.</string>
+</resources>
