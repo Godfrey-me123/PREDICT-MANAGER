@@ -2,8 +2,6 @@ package com.example.service
 
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import com.example.data.engine.AviatorGameAdapter
-import com.example.data.engine.GameAdapterRegistry
 import com.example.data.engine.GameDetection
 import com.example.data.model.MonitoringStatus
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,33 +10,34 @@ import kotlinx.coroutines.flow.asStateFlow
 
 data class GameDetectionState(
     val isGameDetected: Boolean = false,
-    val gameId: String = "unknown",
-    val displayedGameName: String = "Unknown",
-    val supportedPlatforms: List<String> = emptyList(),
     val platformName: String = "Unknown",
+    val displayedGameName: String = "",
+    val gameId: String = "",
+    val roundId: String? = null,
+    val detectedRoundId: String? = null,
+    val originalDetectedTitle: String = "",
+    val supportedPlatforms: List<String> = emptyList(),
     val isReady: Boolean = false,
-    val gamePhase: String = "WAITING_FOR_GAME", // "WAITING_FOR_GAME", "BETTING_OPEN", "IN_FLIGHT", "CRASHED", "LIVE_DETECTION_LOST"
+    val gamePhase: String = "WAITING_FOR_GAME",
     val missingElements: List<String> = emptyList(),
     val detectedMultiplier: Double? = null,
+    val foregroundPackage: String = "",
     val liveColorHex: String? = null,
     val isLiveColorPixelVerified: Boolean = false,
     val liveDetectionLost: Boolean = false,
-    val detectionConfidence: Float = 0f,
-    val detectedRoundId: String? = null,
-    val roundId: String? = detectedRoundId,
-    val foregroundPackage: String = "",
-    val uiTargets: DetectedUiTargets = DetectedUiTargets(),
-    val updatedAtMs: Long = System.currentTimeMillis(),
+    val detectionConfidence: Float = 1f,
     val windowAccessStatus: MonitoringStatus = MonitoringStatus.MONITORING,
     val gameWindowAccessible: Boolean = true,
     val gameWindowSuspended: Boolean = false,
-    val originalDetectedTitle: String = ""
+    val uiTargets: DetectedUiTargets = DetectedUiTargets(),
+    val updatedAtMs: Long = System.currentTimeMillis()
 )
 
 class ScreenEarnerAccessibilityService : AccessibilityController() {
 
     companion object {
-        private const val TAG = "ScreenEarnerA11ySvc"
+        private const val TAG = "PredictManagerA11ySvc"
+        @Volatile
         var instance: ScreenEarnerAccessibilityService? = null
             private set
 
@@ -58,21 +57,25 @@ class ScreenEarnerAccessibilityService : AccessibilityController() {
         val detectionState: StateFlow<GameDetectionState> = _detectionState.asStateFlow()
     }
 
-    @Volatile
-    private var lastValidMultiplierOrRoundMs: Long = 0L
+    /** Shared action executor. StrategyEngine remains the authority for strategy decisions. */
+    val actionExecutor: ScreenEarnerActionExecutor by lazy(LazyThreadSafetyMode.NONE) {
+        ScreenEarnerActionExecutor(this)
+    }
 
-    @Volatile
-    private var hadValidGameSignalInSession: Boolean = false
+    /** Optional ordered UI macro runner; it does not collect multipliers or create strategies. */
+    val macroRunner: ScreenEarnerMacroRunner by lazy(LazyThreadSafetyMode.NONE) {
+        ScreenEarnerMacroRunner(actionExecutor)
+    }
 
     override fun onServiceConnected() {
         try {
             super.onServiceConnected()
             instance = this
             _connectionStatus.value = AccessibilityConnectionStatus.CONNECTED
-            Log.i(TAG, "Predict Manager Live Monitor onServiceConnected: Service active (multi-window inspection enabled).")
+            Log.i(TAG, "ScreenEarnerAccessibilityService connected successfully.")
         } catch (t: Throwable) {
             _connectionStatus.value = AccessibilityConnectionStatus.ERROR
-            Log.e(TAG, "Error in onServiceConnected during initialization", t)
+            Log.e(TAG, "Error in ScreenEarnerAccessibilityService.onServiceConnected", t)
         }
     }
 
@@ -80,158 +83,101 @@ class ScreenEarnerAccessibilityService : AccessibilityController() {
         try {
             if (event == null) return
 
-            val packageName = try {
-                event.packageName?.toString().orEmpty()
-            } catch (_: Throwable) {
-                ""
-            }
+            val packageName = runCatching { event.packageName?.toString().orEmpty() }
+                .getOrDefault("")
             val ownPkg = runCatching { applicationContext?.packageName }.getOrNull()
-            if (!ownPkg.isNullOrBlank() && packageName == ownPkg) {
-                return
-            }
+
+            // Ignore Predict Manager's own overlay events; do not let its controls become game targets.
+            if (!ownPkg.isNullOrBlank() && packageName == ownPkg) return
 
             super.onAccessibilityEvent(event)
 
-            val now = System.currentTimeMillis()
             val targets = detectedTargets.value
-            val hasSignals = targets.detectedMultiplier != null ||
-                targets.ribbonMultipliers.isNotEmpty() ||
-                targets.isBetBtnDetected ||
-                targets.isCashOutBtnDetected ||
-                targets.isCancelBtnDetected ||
-                targets.isFlewAwayDetected
-
             val resolvedSite = GameDetection.resolvePlatformFromSignals(
                 packageName = packageName,
                 detectedUrl = targets.detectedUrl,
                 pageHints = targets.pageTextHints
             )
 
-            val adapter = GameAdapterRegistry.resolveAdapter(
-                packageName = packageName,
-                url = targets.detectedUrl,
-                pageHints = targets.pageTextHints,
-                rawTexts = targets.visibleRawTitles,
-                hasMultiplierSignals = hasSignals
-            )
+            val gameDetected = resolvedSite != null ||
+                packageName.contains("chrome", ignoreCase = true) ||
+                packageName.contains("browser", ignoreCase = true) ||
+                targets.detectedMultiplier != null ||
+                targets.ribbonMultipliers.isNotEmpty() ||
+                targets.isBetBtnDetected ||
+                targets.isCashOutBtnDetected ||
+                targets.isCancelBtnDetected ||
+                targets.detectedBalance != null
 
-            // Even if title is Unknown, record when crash/multiplier signals are visible
-            val isGameFound = hasSignals || (adapter != null && (
-                resolvedSite != null ||
-                    targets.pageTextHints.isNotEmpty()
-                ))
-
-            val platformDisplay = GameAdapterRegistry.resolvePlatformDisplay(
-                packageName = packageName,
-                url = targets.detectedUrl,
-                pageHints = targets.pageTextHints
-            )
-
-            val rawTitleCandidate = targets.visibleRawTitles.firstOrNull().orEmpty()
-            val resolvedGameId = adapter?.gameId?.ifBlank { "unknown" } ?: "unknown"
-            val resolvedGameName = when {
-                adapter != null && adapter.displayedGameName != "Unknown" ->
-                    if (platformDisplay != "Unknown") "$platformDisplay ${adapter.displayedGameName}".trim() else adapter.displayedGameName
-                resolvedSite != null -> resolvedSite
-                else -> "Unknown"
-            }
-            val combinedPlatformLabel = resolvedSite ?: platformDisplay.ifBlank { "Unknown" }
-
-            if (isGameFound && (targets.detectedMultiplier != null || targets.ribbonMultipliers.isNotEmpty() || targets.isFlewAwayDetected || targets.isWaitingForNextRound)) {
-                lastValidMultiplierOrRoundMs = now
-                hadValidGameSignalInSession = true
-            } else if (!isGameFound) {
-                hadValidGameSignalInSession = false
-                lastValidMultiplierOrRoundMs = 0L
+            val detectedPlatform = resolvedSite ?: when {
+                packageName.contains("chrome", ignoreCase = true) -> "Chrome Aviator Web"
+                targets.detectedUrl?.contains("betpawa", ignoreCase = true) == true -> "BetPawa Aviator"
+                targets.detectedUrl?.contains("sportybet", ignoreCase = true) == true -> "SportyBet Aviator"
+                else -> "Detected Game"
             }
 
-            val roundState = adapter?.detectRoundState(
-                targets = targets,
-                hasActiveGameBefore = hadValidGameSignalInSession,
-                nowMs = now,
-                lastValidDetectionMs = lastValidMultiplierOrRoundMs
-            ) ?: targets.gamePhase
-
-            val liveLost = roundState == "LIVE_DETECTION_LOST" ||
-                (isGameFound && hadValidGameSignalInSession &&
-                    targets.detectedMultiplier == null &&
-                    targets.ribbonMultipliers.isEmpty() &&
-                    lastValidMultiplierOrRoundMs > 0L &&
-                    (now - lastValidMultiplierOrRoundMs) > AviatorGameAdapter.LIVE_DETECTION_TIMEOUT_MS)
-
-            val liveSample = if (targets.detectedMultiplier != null && targets.liveMultiplierBounds != null) {
-                ScreenColorSampler.sampleColorInBounds(targets.liveMultiplierBounds)
-            } else null
-
-            val confidence = when {
-                !isGameFound -> 0f
-                liveLost -> 0.2f
-                targets.detectedMultiplier != null && targets.ribbonItems.isNotEmpty() -> 0.96f
-                targets.detectedMultiplier != null || targets.ribbonItems.isNotEmpty() -> 0.86f
-                else -> 0.60f
-            }
-
-            val missing = mutableListOf<String>()
-            if (targets.detectedMultiplier == null) missing.add("Live Center Multiplier")
-            if (targets.ribbonItems.isEmpty()) missing.add("History Ribbon / Grid")
-
-            val activeRoundId = targets.detectedCurrentRoundId ?: targets.roundId ?: targets.ribbonItems.firstOrNull()?.roundId
-            val accessStatus = when {
-                !isGameFound -> MonitoringStatus.WAITING_FOR_GAME
-                liveLost -> MonitoringStatus.GAME_NOT_ACCESSIBLE
-                else -> MonitoringStatus.MONITORING
+            val missing = buildList {
+                if (!targets.isBetBtnDetected && !targets.isCancelBtnDetected &&
+                    !targets.isCashOutBtnDetected
+                ) add("Bet Control Target")
+                if (!targets.isCashOutBtnDetected) add("Cash Out Target")
+                if (!targets.isStakeInputDetected && !targets.isDoubleBtnDetected &&
+                    !targets.isAddBtnDetected
+                ) add("Stake Input / 2x / + Controls")
             }
 
             _detectionState.value = GameDetectionState(
-                isGameDetected = isGameFound,
-                gameId = resolvedGameId,
-                displayedGameName = resolvedGameName,
-                supportedPlatforms = adapter?.supportedPlatforms ?: emptyList(),
-                platformName = combinedPlatformLabel,
-                isReady = isGameFound && !liveLost,
-                gamePhase = if (liveLost) "LIVE_DETECTION_LOST" else roundState,
+                isGameDetected = gameDetected,
+                platformName = detectedPlatform,
+                displayedGameName = detectedPlatform,
+                gameId = detectedPlatform.lowercase().replace("\\s+".toRegex(), "_"),
+                roundId = targets.detectedCurrentRoundId,
+                detectedRoundId = targets.detectedCurrentRoundId,
+                originalDetectedTitle = detectedPlatform,
+                supportedPlatforms = listOf("BetPawa", "SportyBet", "Chrome"),
+                isReady = gameDetected && (
+                    targets.isBetBtnDetected ||
+                        targets.isCancelBtnDetected ||
+                        targets.isCashOutBtnDetected ||
+                        targets.detectedMultiplier != null ||
+                        targets.ribbonMultipliers.isNotEmpty()
+                    ),
+                gamePhase = targets.gamePhase,
                 missingElements = missing,
-                detectedMultiplier = if (liveLost) null else targets.detectedMultiplier,
-                liveColorHex = liveSample?.hex,
-                isLiveColorPixelVerified = liveSample?.isPixelVerified == true,
-                liveDetectionLost = liveLost,
-                detectionConfidence = confidence,
-                detectedRoundId = activeRoundId,
-                roundId = activeRoundId,
+                detectedMultiplier = targets.detectedMultiplier,
                 foregroundPackage = packageName,
+                gameWindowAccessible = true,
                 uiTargets = targets,
-                updatedAtMs = now,
-                windowAccessStatus = accessStatus,
-                gameWindowAccessible = isGameFound && !liveLost,
-                gameWindowSuspended = liveLost,
-                originalDetectedTitle = rawTitleCandidate.ifBlank { adapter?.displayedGameName.orEmpty() }
+                updatedAtMs = System.currentTimeMillis()
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "Caught non-fatal exception in onAccessibilityEvent (service preserved)", t)
+            Log.e(TAG, "Error processing accessibility event", t)
         }
     }
 
-    fun performClickAtCoordinates(x: Float, y: Float, onComplete: ((Boolean) -> Unit)? = null) {
+    fun performClickAtCoordinates(
+        x: Float,
+        y: Float,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
         dispatchTouchGesture(x, y, onComplete)
     }
 
     override fun onInterrupt() {
         try {
-            super.onInterrupt()
-            Log.w(TAG, "Predict Manager Live Monitor onInterrupt called by system.")
-        } catch (t: Throwable) {
             _connectionStatus.value = AccessibilityConnectionStatus.ERROR
+            macroRunner.stop()
+            super.onInterrupt()
+        } catch (t: Throwable) {
             Log.e(TAG, "Error in onInterrupt", t)
         }
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         return try {
-            if (instance == this) {
-                instance = null
-            }
+            macroRunner.stop()
+            if (instance === this) instance = null
             _connectionStatus.value = AccessibilityConnectionStatus.DISCONNECTED
-            Log.i(TAG, "Predict Manager Live Monitor onUnbind: Service unbound by system.")
             super.onUnbind(intent)
         } catch (t: Throwable) {
             _connectionStatus.value = AccessibilityConnectionStatus.ERROR
@@ -242,12 +188,10 @@ class ScreenEarnerAccessibilityService : AccessibilityController() {
 
     override fun onDestroy() {
         try {
+            macroRunner.stop()
             super.onDestroy()
-            if (instance == this) {
-                instance = null
-            }
+            if (instance === this) instance = null
             _connectionStatus.value = AccessibilityConnectionStatus.DISCONNECTED
-            Log.i(TAG, "Predict Manager Live Monitor onDestroy: Service destroyed cleanly.")
         } catch (t: Throwable) {
             _connectionStatus.value = AccessibilityConnectionStatus.ERROR
             Log.e(TAG, "Error in onDestroy", t)
