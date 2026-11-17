@@ -480,7 +480,8 @@ object AndroidSystemNotificationDispatcher : SystemNotificationDispatcher {
             StrategyNotificationType.STRATEGY_APPROACHING -> CHANNEL_ALARM
             StrategyNotificationType.HOURLY_SUMMARY,
             StrategyNotificationType.NEW_HOUR_STARTED -> CHANNEL_HOURLY
-            StrategyNotificationType.GAME_DETECTED -> CHANNEL_STANDARD
+            StrategyNotificationType.GAME_DETECTED,
+            StrategyNotificationType.AUTOMATION_ACTION -> CHANNEL_STANDARD
             StrategyNotificationType.HISTORY_UNAVAILABLE,
             StrategyNotificationType.MONITORING_ERROR,
             StrategyNotificationType.STRATEGY_PAUSED,
@@ -494,7 +495,8 @@ object AndroidSystemNotificationDispatcher : SystemNotificationDispatcher {
         StrategyNotificationType.NEW_HOUR_STARTED -> MainActivity.TAB_HOURLY_ANALYSIS
         StrategyNotificationType.GAME_DETECTED,
         StrategyNotificationType.HISTORY_UNAVAILABLE,
-        StrategyNotificationType.MONITORING_ERROR -> MainActivity.TAB_LIVE_MONITOR
+        StrategyNotificationType.MONITORING_ERROR,
+        StrategyNotificationType.AUTOMATION_ACTION -> MainActivity.TAB_LIVE_MONITOR
         StrategyNotificationType.STRATEGY_REACHED,
         StrategyNotificationType.STRATEGY_APPROACHING,
         StrategyNotificationType.STRATEGY_INVALIDATED,
@@ -737,12 +739,13 @@ class StrategyNotificationManager(
             StrategyNotificationType.STRATEGY_APPROACHING -> settings.approachingEnabled
             StrategyNotificationType.STRATEGY_REACHED -> settings.reachedEnabled
             StrategyNotificationType.STRATEGY_INVALIDATED -> settings.invalidatedEnabled
-            StrategyNotificationType.HISTORY_UNAVAILABLE,
-            StrategyNotificationType.MONITORING_ERROR -> settings.historyUnavailableEnabled
+            StrategyNotificationType.HISTORY_UNAVAILABLE -> settings.historyUnavailableEnabled
+            StrategyNotificationType.MONITORING_ERROR -> settings.monitoringErrorsEnabled || settings.historyUnavailableEnabled
             StrategyNotificationType.STRATEGY_PAUSED -> settings.pausedEnabled
             StrategyNotificationType.HOURLY_SUMMARY,
             StrategyNotificationType.NEW_HOUR_STARTED -> settings.hourlySummaryEnabled
             StrategyNotificationType.GAME_DETECTED -> settings.gameDetectionEnabled
+            StrategyNotificationType.AUTOMATION_ACTION -> settings.standardAlertEnabled
         }
         if (!typeEnabled) {
             return NotificationDeliveryStatus.SUPPRESSED_TYPE_OFF

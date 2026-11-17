@@ -42,7 +42,6 @@ import com.example.data.model.ShortcutType
 import com.example.data.model.StrategyConfig
 import com.example.service.AutomationController
 import com.example.service.BatteryOptimizationWorker
-import com.example.service.FloatingBubbleService
 import com.example.service.FloatingOverlayService
 import com.example.service.ScreenCaptureProjectionService
 import com.example.service.ScreenEarnerAccessibilityService
@@ -340,7 +339,6 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
             nm?.cancelAll()
             context.stopService(Intent(context, ScreenEarnerOverlayService::class.java))
             context.stopService(Intent(context, FloatingOverlayService::class.java))
-            context.stopService(Intent(context, FloatingBubbleService::class.java))
             context.stopService(Intent(context, ScreenCaptureProjectionService::class.java))
             _isOverlayServiceRunning.value = false
             _userMessage.value = "Predict Manager floating utility stopped."
@@ -482,7 +480,7 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
 
     fun toggleAutoBet(enabled: Boolean) {
         val current = strategyConfig.value ?: StrategyConfig()
-        saveStrategyConfig(current.copy(isAutoBetEnabled = enabled))
+        saveStrategyConfig(current.copy(isAutoBetEnabled = enabled, isAutoCashOutEnabled = enabled))
         _userMessage.value = if (enabled) "Live automation enabled (Betting & Editing Active)" else "Live automation paused (Recording Only)"
     }
 

@@ -82,7 +82,16 @@ class RiskManager {
             )
         }
 
-        if (!currentBalance.isFinite() || currentBalance <= 0.0) {
+        if (balanceStatus != com.example.data.model.BalanceDetectionStatus.VERIFIED &&
+            balanceStatus != com.example.data.model.BalanceDetectionStatus.DETECTED
+        ) {
+            return RiskCheckResult(
+                false,
+                "Cannot place bet: Verified account balance is unavailable (${balanceFailureReason ?: balanceStatus.name})."
+            )
+        }
+
+        if (!currentBalance.isFinite() || currentBalance < 0.0) {
             return RiskCheckResult(
                 false,
                 "Cannot place bet: Verified account balance is unavailable ($currentBalance)."

@@ -302,7 +302,12 @@ fun SettingsAppearanceScreen(
                     Switch(
                         checked = localConfig.isAutoBetEnabled,
                         onCheckedChange = {
-                            applyConfigUpdate(localConfig.copy(isAutoBetEnabled = it))
+                            applyConfigUpdate(
+                                localConfig.copy(
+                                    isAutoBetEnabled = it,
+                                    isAutoCashOutEnabled = it
+                                )
+                            )
                         },
                         modifier = Modifier.testTag("settings_auto_bet_switch")
                     )

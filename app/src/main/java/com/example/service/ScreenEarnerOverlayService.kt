@@ -1355,7 +1355,6 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         isRunning = false
 
         runCatching { stopService(ScreenCaptureProjectionService.createStopIntent(applicationContext)) }
-        runCatching { stopService(Intent(applicationContext, FloatingBubbleService::class.java)) }
         runCatching { stopService(Intent(applicationContext, FloatingOverlayService::class.java)) }
 
         runCatching {

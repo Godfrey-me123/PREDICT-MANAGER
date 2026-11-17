@@ -384,7 +384,14 @@ fun OverlaySettingsPanelComposable(
                         }
                         Switch(
                             checked = localConfig.isAutoBetEnabled,
-                            onCheckedChange = { pushConfig(localConfig.copy(isAutoBetEnabled = it)) },
+                            onCheckedChange = {
+                                pushConfig(
+                                    localConfig.copy(
+                                        isAutoBetEnabled = it,
+                                        isAutoCashOutEnabled = it
+                                    )
+                                )
+                            },
                             modifier = Modifier.testTag("overlay_settings_auto_bet_switch")
                         )
                     }

@@ -248,16 +248,19 @@ class ScreenEarnerActionExecutor(
                 )
                 .build()
 
+            AccessibilityController.gestureOverlayPassThroughListener?.invoke(true)
             val dispatched = service.dispatchGesture(
                 gesture,
                 object : AccessibilityService.GestureResultCallback() {
                     override fun onCompleted(gestureDescription: GestureDescription?) {
+                        AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
                         if (continuation.isActive) {
                             continuation.resume(Result(true, "Gesture dispatched"))
                         }
                     }
 
                     override fun onCancelled(gestureDescription: GestureDescription?) {
+                        AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
                         if (continuation.isActive) {
                             continuation.resume(Result(false, "Gesture cancelled by Android"))
                         }
@@ -265,11 +268,14 @@ class ScreenEarnerActionExecutor(
                 },
                 null
             )
-            if (!dispatched && continuation.isActive) {
-                continuation.resume(Result(false, "Android rejected gesture dispatch"))
+            if (!dispatched) {
+                AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
+                if (continuation.isActive) {
+                    continuation.resume(Result(false, "Android rejected gesture dispatch"))
+                }
             }
             continuation.invokeOnCancellation {
-                // Android does not expose a per-gesture cancellation handle.
+                AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
             }
         }
     }

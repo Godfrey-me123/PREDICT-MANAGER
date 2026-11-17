@@ -537,7 +537,8 @@ enum class StrategyNotificationType(val displayLabel: String) {
     HOURLY_SUMMARY("Hourly Summary"),
     NEW_HOUR_STARTED("New Hour Started"),
     GAME_DETECTED("Game Detected"),
-    MONITORING_ERROR("Monitoring Error")
+    MONITORING_ERROR("Monitoring Error"),
+    AUTOMATION_ACTION("Automation Action")
 }
 
 enum class NotificationDeliveryStatus(val displayLabel: String) {

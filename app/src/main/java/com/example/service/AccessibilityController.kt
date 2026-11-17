@@ -1375,10 +1375,13 @@ open class AccessibilityController : AccessibilityService() {
         )
     }
 
+    fun getLatestUiTargets(): DetectedUiTargets = _detectedTargets.value
+
     /**
      * Writes the new stake into an editable field via ACTION_SET_TEXT first, verifies the site
      * accepted the exact value by immediately re-reading the field, and falls back to clipboard
      * ACTION_PASTE + re-read verification if the WebView/React input ignored ACTION_SET_TEXT.
+     * Never reports success unless read-back explicitly verifies the expected stake.
      */
     protected open fun writeAndVerifyStakeNode(
         stakeNode: AccessibilityNodeInfo,
@@ -1386,39 +1389,52 @@ open class AccessibilityController : AccessibilityService() {
         formatted: String,
         rootNode: AccessibilityNodeInfo
     ): Boolean {
-        // Attempt 1: ACTION_SET_TEXT
+        fun readBackStake(): String? {
+            runCatching { stakeNode.refresh() }
+            val direct = runCatching { stakeNode.text?.toString() }.getOrNull()
+            if (!direct.isNullOrBlank()) return direct
+            runCatching { rootNode.refresh() }
+            return runCatching { findEditableStakeNode(rootNode, rootNode)?.text?.toString() }.getOrNull()
+        }
+
+        // Attempt 1: Focus, select any existing text, and replace via ACTION_SET_TEXT
         runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
+        val existingLen = runCatching { stakeNode.text?.length ?: 0 }.getOrDefault(0)
+        if (existingLen > 0) {
+            val selArgs = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existingLen)
+            }
+            runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs) }
+        }
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, formatted)
         }
         val setOk = runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
-        runCatching { stakeNode.refresh() }
-        val readAfterSet = runCatching { stakeNode.text?.toString() }.getOrNull()
-            ?: runCatching { findEditableStakeNode(rootNode, rootNode)?.text?.toString() }.getOrNull()
-        if (setOk && (verifyStakeAccepted(readAfterSet, newStake) || readAfterSet == null)) {
-            safeLogI(TAG, "Stake accepted via ACTION_SET_TEXT: '$formatted' (verified='${readAfterSet ?: formatted}')")
+        val readAfterSet = readBackStake()
+        if (setOk && verifyStakeAccepted(readAfterSet, newStake)) {
+            safeLogI(TAG, "Stake accepted via ACTION_SET_TEXT: '$formatted' (verified='$readAfterSet')")
             return true
         }
 
-        // Attempt 2: ClipboardManager + ACTION_PASTE fallback
+        // Attempt 2: ClipboardManager + ACTION_PASTE fallback with strict read-back verification
         try {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             if (clipboard != null) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("stake", formatted))
                 stakeNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                val existingLen = stakeNode.text?.length ?: 0
-                if (existingLen > 0) {
+                val lenBeforePaste = runCatching { stakeNode.text?.length ?: 0 }.getOrDefault(0)
+                if (lenBeforePaste > 0) {
                     val selArgs = Bundle().apply {
                         putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
-                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existingLen)
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, lenBeforePaste)
                     }
                     stakeNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
                 }
                 val pasteOk = stakeNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-                runCatching { stakeNode.refresh() }
-                val readAfterPaste = runCatching { stakeNode.text?.toString() }.getOrNull()
-                if (pasteOk && (verifyStakeAccepted(readAfterPaste, newStake) || readAfterPaste == null)) {
-                    safeLogI(TAG, "Stake accepted via Clipboard ACTION_PASTE: '$formatted'")
+                val readAfterPaste = readBackStake()
+                if (pasteOk && verifyStakeAccepted(readAfterPaste, newStake)) {
+                    safeLogI(TAG, "Stake accepted via Clipboard ACTION_PASTE: '$formatted' (verified='$readAfterPaste')")
                     return true
                 }
             }
@@ -1426,7 +1442,8 @@ open class AccessibilityController : AccessibilityService() {
             safeLogW(TAG, "Clipboard paste fallback failed: ${t.message}")
         }
 
-        return setOk
+        safeLogW(TAG, "Stake verification failed for target=$newStake ('$formatted'); observed='$readAfterSet'")
+        return false
     }
 
     /**
@@ -1479,7 +1496,7 @@ open class AccessibilityController : AccessibilityService() {
                     StakeProgressionMode.ADD_AMOUNT -> targets.addButtonBounds
                 }
 
-                if (targetRect != null) {
+                if (targetRect != null && !targetRect.isEmpty) {
                     dispatchTouchGesture(targetRect.centerX().toFloat(), targetRect.centerY().toFloat()) { ok ->
                         if (ok) emitDiagnostic("All done. Ready.")
                         onComplete?.invoke(ok)

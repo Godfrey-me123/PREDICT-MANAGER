@@ -386,7 +386,7 @@ class GameDetection {
         val incomingBalance = targets.detectedBalance
         val incomingCurrency = targets.detectedCurrency ?: current.detectedCurrency
         val resolution = when {
-            incomingBalance != null && incomingBalance.isFinite() && incomingBalance > 0.0 -> {
+            incomingBalance != null && incomingBalance.isFinite() && incomingBalance >= 0.0 -> {
                 BalanceResolution(incomingBalance, BalanceDetectionStatus.VERIFIED, currentTimeMs, null)
             }
             current.detectedBalance != null && current.balanceLastUpdatedMs > 0L -> {
@@ -664,7 +664,9 @@ class GameDetection {
         stalenessThresholdMs: Long = BALANCE_STALENESS_THRESHOLD_MS
     ) {
         val curr = _balanceState.value
-        if (curr.status == BalanceDetectionStatus.VERIFIED && curr.lastUpdatedMs > 0L) {
+        if ((curr.status == BalanceDetectionStatus.VERIFIED || curr.status == BalanceDetectionStatus.DETECTED) &&
+            curr.lastUpdatedMs > 0L
+        ) {
             if (currentTimeMs - curr.lastUpdatedMs > stalenessThresholdMs) {
                 val stale = curr.copy(
                     status = BalanceDetectionStatus.STALE,
@@ -844,7 +846,7 @@ class GameDetection {
         val incomingCurrency = targets.detectedCurrency ?: current.detectedCurrency
 
         val resolution = when {
-            incomingBalance != null && incomingBalance.isFinite() && incomingBalance > 0.0 -> {
+            incomingBalance != null && incomingBalance.isFinite() && incomingBalance >= 0.0 -> {
                 BalanceResolution(incomingBalance, BalanceDetectionStatus.VERIFIED, currentTimeMs, null)
             }
             current.detectedBalance != null && current.balanceLastUpdatedMs > 0L -> {

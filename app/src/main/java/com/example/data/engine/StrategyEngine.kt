@@ -402,6 +402,59 @@ class StrategyEngine {
     }
 
     /**
+     * Activates a betting recovery session when an external CustomPatternStrategy rule fires,
+     * respecting the exclusive lock (no-op if a session is already active).
+     */
+    fun activateExternalPatternTrigger(
+        strategyName: String,
+        config: StrategyConfig = _boundConfig.value,
+        currentTimeMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (state.isBettingSessionActive) return false
+        val firstEnabledRule = config.getRuleConfigs().firstOrNull { it.isEnabled }
+        val mode = firstEnabledRule?.progressionMode ?: state.activeProgressionMode
+        val addAmt = firstEnabledRule?.customAddAmount ?: state.activeCustomAddAmount
+        val targetWins = firstEnabledRule?.targetWinsToFetch ?: config.stopAfterConsecutiveWins.coerceAtLeast(1)
+        val initialStake = roundStake(config.baseStake)
+        val timeoutLimitMs = config.sessionTimeoutMinutes.coerceAtLeast(1) * 60_000L
+
+        state = state.copy(
+            isBettingSessionActive = true,
+            activeRuleId = null,
+            activeRuleLabel = strategyName,
+            activeProgressionMode = mode,
+            activeCustomAddAmount = addAmt,
+            targetWinsToFetch = targetWins,
+            sessionStartedTimestamp = currentTimeMs,
+            sessionTimeoutRemainingMs = timeoutLimitMs,
+            currentCalculatedStake = initialStake,
+            currentStakeLevel = 1,
+            consecutiveWinsInSession = 0,
+            consecutiveLossesInSession = 0
+        )
+
+        publishStakeInstruction(
+            stake = initialStake,
+            mode = mode,
+            addAmount = addAmt,
+            targetMultiplier = config.targetMultiplier,
+            stakeLevel = 1,
+            isSessionActive = true,
+            reason = "$strategyName Triggered"
+        )
+        triggerAction(
+            AutomationActionEvent(
+                actionType = ActionType.BET,
+                amountOrMultiplier = initialStake,
+                reason = "$strategyName matched -> Fetch $targetWins wins",
+                timestamp = currentTimeMs
+            )
+        )
+        safeLogI("External pattern strategy '$strategyName' activated betting session (stake=$initialStake)")
+        return true
+    }
+
+    /**
      * Evaluates completed round multipliers against all rules while strictly enforcing
      * exclusive non-overlapping strategy lock and 3-minute session timeout guard.
      */
