@@ -235,6 +235,8 @@ class ScreenEarnerActionExecutor(
             return Result(false, "Gesture coordinates are outside the current display")
         }
 
+        AccessibilityController.notifyOverlayPassThrough(true)
+        kotlinx.coroutines.delay(45L)
         return suspendCancellableCoroutine { continuation ->
             val path = Path().apply {
                 moveTo(startX, startY)
@@ -248,19 +250,18 @@ class ScreenEarnerActionExecutor(
                 )
                 .build()
 
-            AccessibilityController.gestureOverlayPassThroughListener?.invoke(true)
             val dispatched = service.dispatchGesture(
                 gesture,
                 object : AccessibilityService.GestureResultCallback() {
                     override fun onCompleted(gestureDescription: GestureDescription?) {
-                        AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
+                        AccessibilityController.notifyOverlayPassThrough(false)
                         if (continuation.isActive) {
                             continuation.resume(Result(true, "Gesture dispatched"))
                         }
                     }
 
                     override fun onCancelled(gestureDescription: GestureDescription?) {
-                        AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
+                        AccessibilityController.notifyOverlayPassThrough(false)
                         if (continuation.isActive) {
                             continuation.resume(Result(false, "Gesture cancelled by Android"))
                         }
@@ -269,13 +270,13 @@ class ScreenEarnerActionExecutor(
                 null
             )
             if (!dispatched) {
-                AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
+                AccessibilityController.notifyOverlayPassThrough(false)
                 if (continuation.isActive) {
                     continuation.resume(Result(false, "Android rejected gesture dispatch"))
                 }
             }
             continuation.invokeOnCancellation {
-                AccessibilityController.gestureOverlayPassThroughListener?.invoke(false)
+                AccessibilityController.notifyOverlayPassThrough(false)
             }
         }
     }
@@ -307,10 +308,24 @@ class ScreenEarnerActionExecutor(
         val id = runCatching { root.viewIdResourceName.orEmpty() }.getOrDefault("")
         val editable = runCatching { root.isEditable }.getOrDefault(false)
         val enabled = runCatching { root.isEnabled }.getOrDefault(false)
+        val lowerText = text.trim().lowercase()
+        val lowerDesc = desc.trim().lowercase()
+        val lowerId = id.lowercase()
         val metadata = "$text $desc $hint $id".lowercase()
-        val matches = q.isNotEmpty() &&
-            (metadata.contains(q) || text.equals(query, ignoreCase = true) ||
-                desc.equals(query, ignoreCase = true))
+
+        val isBrowserChrome = lowerId.contains("url_bar") || lowerId.contains("omnibox") || lowerId.contains("location_bar")
+        val isMisleadingActionMatch = !requireEditable && (q == "bet" || q == "cash out") && (
+            metadata.contains("betpawa") || metadata.contains("sportybet") ||
+                metadata.contains("all bets") || metadata.contains("my bets") ||
+                metadata.contains("top bets") || metadata.contains("betslip") ||
+                metadata.contains("bet history") || metadata.contains("auto") ||
+                metadata.contains("cancel")
+            )
+
+        val matches = q.isNotEmpty() && !isBrowserChrome && !isMisleadingActionMatch &&
+            (lowerText == q || lowerDesc == q ||
+                (q == "bet" && lowerText.startsWith("bet") && !lowerText.contains("bets")) ||
+                (q != "bet" && metadata.contains(q)))
         if (matches && enabled && (!requireEditable || editable)) {
             return AccessibilityNodeInfo.obtain(root)
         }

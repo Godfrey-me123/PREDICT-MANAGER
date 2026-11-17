@@ -566,8 +566,12 @@ object AutomationController {
                 currentEngine.automationState.value == com.example.data.engine.AutomationState.RUNNING
             ) {
                 val cfg = _latestConfig.value
-                val effectiveMult = detection.detectedMultiplier
-                    ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                val effectiveMult = if (detection.gamePhase == "IN_FLIGHT") {
+                    detection.detectedMultiplier ?: 0.0
+                } else {
+                    detection.detectedMultiplier
+                        ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                }
                 currentEngine.handlePhaseUpdate(
                     phase = detection.gamePhase,
                     liveMultiplier = effectiveMult,
@@ -575,7 +579,7 @@ object AutomationController {
                     limits = _latestLimits.value,
                     currentTimeMs = nowMs,
                     siteButtonState = detection.uiTargets.siteButtonState,
-                    observationOnly = !cfg.isAutoBetEnabled
+                    observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
                 )
             }
         }
@@ -1106,6 +1110,7 @@ object AutomationController {
                 currentEngine.strategyEngine.getState(),
                 "Pattern Triggered: $strategyName"
             )
+            currentEngine.notifyStrategyWaitingToBet(strategyName)
         }
     }
 
@@ -1291,8 +1296,12 @@ object AutomationController {
                         reason = "No visible ribbon multipliers readable in game interface.",
                         nowMs = nowMs
                     )
-                    val liveMultNoRibbon = detection.detectedMultiplier
-                        ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                    val liveMultNoRibbon = if (detection.gamePhase == "IN_FLIGHT") {
+                        detection.detectedMultiplier ?: 0.0
+                    } else {
+                        detection.detectedMultiplier
+                            ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                    }
                     currentEngine.handlePhaseUpdate(
                         phase = detection.gamePhase,
                         liveMultiplier = liveMultNoRibbon,
@@ -1300,7 +1309,7 @@ object AutomationController {
                         limits = _latestLimits.value,
                         currentTimeMs = nowMs,
                         siteButtonState = targets.siteButtonState,
-                        observationOnly = !cfg.isAutoBetEnabled
+                        observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
                     )
                     CurrencyManager.updateFromConfigAndGameState(cfg, currentEngine.gameDetection.gameState.value)
                     currentEngine.updateLiveDiagnostics(targets, currentEngine.gameDetection.gameState.value, cfg)
@@ -1467,8 +1476,12 @@ object AutomationController {
                 }
 
                 // Drive live phase execution (BETTING_OPEN stake/bet placement + IN_FLIGHT cash-out)
-                val liveMult = detection.detectedMultiplier
-                    ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                val liveMult = if (detection.gamePhase == "IN_FLIGHT") {
+                    detection.detectedMultiplier ?: 0.0
+                } else {
+                    detection.detectedMultiplier
+                        ?: currentEngine.gameDetection.gameState.value.currentMultiplier
+                }
                 currentEngine.handlePhaseUpdate(
                     phase = detection.gamePhase,
                     liveMultiplier = liveMult,
@@ -1476,7 +1489,7 @@ object AutomationController {
                     limits = _latestLimits.value,
                     currentTimeMs = nowMs,
                     siteButtonState = targets.siteButtonState,
-                    observationOnly = !cfg.isAutoBetEnabled
+                    observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
                 )
 
                 CurrencyManager.updateFromConfigAndGameState(cfg, currentEngine.gameDetection.gameState.value)

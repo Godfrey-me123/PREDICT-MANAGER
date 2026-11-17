@@ -63,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.engine.AutomationState
+import com.example.data.model.ShortcutType
+import com.example.service.FloatingHandsOverlayManager
 import com.example.ui.ScreenEarnerViewModel
 import com.example.ui.components.AutoPredictorTopBar
 import com.example.ui.screens.HomeScreen
@@ -207,6 +209,26 @@ class MainActivity : ComponentActivity() {
                 val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsStateWithLifecycle()
                 val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsStateWithLifecycle()
 
+                val shortcuts by viewModel.shortcuts.collectAsStateWithLifecycle()
+                val betShortcut = shortcuts.firstOrNull { it.type == ShortcutType.BET && it.isCalibrated && it.targetX > 0f }
+                    ?: shortcuts.firstOrNull { it.type == ShortcutType.BET && it.label.contains("HAND", ignoreCase = true) }
+                val cashOutShortcut = shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT && it.isCalibrated && it.targetX > 0f }
+                    ?: shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT }
+
+                val floatingHandsManager = remember(context) {
+                    FloatingHandsOverlayManager(
+                        context = context.applicationContext,
+                        repository = viewModel.repository,
+                        automationEngine = viewModel.automationEngine
+                    )
+                }
+
+                LaunchedEffect(Unit) {
+                    viewModel.automationEngine.onGestureDispatchRequested = { _, _, _ ->
+                        floatingHandsManager.setPassThroughTemporarily(240L)
+                    }
+                }
+
                 var showMoreModulesSheet by remember { mutableStateOf(false) }
                 val snackbarHostState = remember { SnackbarHostState() }
 
@@ -312,7 +334,23 @@ class MainActivity : ComponentActivity() {
                                 onStopAlarm = { AlarmAudioController.stopAlarm(context) },
                                 onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
                                 onEndSessionAndClearData = { viewModel.endSessionAndClearSessionData() },
-                                onToggleAutoBet = { viewModel.toggleAutoBet(it) }
+                                onToggleAutoBet = { viewModel.toggleAutoBet(it) },
+                                betShortcut = betShortcut,
+                                cashOutShortcut = cashOutShortcut,
+                                onToggleBetHand = {
+                                    floatingHandsManager.showOrToggleHand(
+                                        ShortcutType.BET,
+                                        betShortcut,
+                                        strategyConfig?.targetMultiplier ?: 2.00
+                                    )
+                                },
+                                onToggleCashOutHand = {
+                                    floatingHandsManager.showOrToggleHand(
+                                        ShortcutType.CASH_OUT,
+                                        cashOutShortcut,
+                                        strategyConfig?.targetMultiplier ?: 2.00
+                                    )
+                                }
                             )
 
                             TAB_LIVE_MONITOR -> LiveMonitorScreen(

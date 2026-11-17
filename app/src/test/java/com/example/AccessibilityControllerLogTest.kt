@@ -292,6 +292,51 @@ class AccessibilityControllerLogTest {
     }
 
     @Test
+    fun `ignores bottom All Bets and Auto Cash Out multipliers while plane flies under target`() {
+        val root = makeNode("android.widget.FrameLayout", bounds = Rect(0, 0, 1080, 2400), pkg = "com.android.chrome")
+        val cashOutBtn = makeNode("android.widget.Button", text = "Cash Out", bounds = Rect(60, 1520, 1020, 1680), clickable = true, pkg = "com.android.chrome")
+        val autoCashPanel = makeNode("android.widget.LinearLayout", resourceId = "auto_cashout_row", bounds = Rect(60, 1720, 1020, 1820), pkg = "com.android.chrome")
+        val autoCashTarget = makeNode("android.widget.TextView", text = "2.00x", bounds = Rect(700, 1730, 900, 1800), pkg = "com.android.chrome")
+        val allBetsList = makeNode("android.widget.RecyclerView", resourceId = "all_bets_table", bounds = Rect(0, 1850, 1080, 2360), pkg = "com.android.chrome")
+        val otherPlayerWin = makeNode("android.widget.TextView", text = "3.45x", bounds = Rect(520, 1920, 680, 1980), pkg = "com.android.chrome")
+        val liveStageMult = makeNode("android.widget.TextView", text = "1.14x", bounds = Rect(360, 740, 720, 890), pkg = "com.android.chrome")
+
+        val treeMap = IdentityHashMap<AccessibilityNodeInfo, List<AccessibilityNodeInfo>>().apply {
+            put(root, listOf(liveStageMult, cashOutBtn, autoCashPanel, allBetsList))
+            put(autoCashPanel, listOf(autoCashTarget))
+            put(allBetsList, listOf(otherPlayerWin))
+        }
+        val controller = ExposedTestAccessibilityController(treeMap)
+
+        val scan = controller.scan(root)
+        assertEquals(com.example.data.model.SiteButtonState.CASH_OUT_AVAILABLE, scan.siteButtonState)
+        assertEquals(1.14, scan.detectedMultiplier!!, 0.001)
+
+        // Even when canvas hides the live stage multiplier from a11y, bottom table values must NOT leak as detectedMultiplier
+        liveStageMult.text = ""
+        val canvasScan = controller.scan(root)
+        assertEquals(null, canvasScan.detectedMultiplier)
+    }
+
+    @Test
+    fun `keeps IDLE_READY_TO_BET when green Bet button is visible even with waiting hint and excludes BetPawa header`() {
+        val root = makeNode("android.widget.FrameLayout", bounds = Rect(0, 0, 1080, 2400), pkg = "com.android.chrome")
+        val headerLogo = makeNode("android.widget.Button", text = "BetPawa", bounds = Rect(30, 180, 240, 250), clickable = true, pkg = "com.android.chrome")
+        val waitingBanner = makeNode("android.widget.TextView", text = "Waiting for next round", bounds = Rect(240, 700, 840, 780), pkg = "com.android.chrome")
+        val betButton = makeNode("android.widget.Button", text = "Bet 100 TZS", bounds = Rect(60, 1500, 1020, 1660), clickable = true, pkg = "com.android.chrome")
+
+        val treeMap = IdentityHashMap<AccessibilityNodeInfo, List<AccessibilityNodeInfo>>().apply {
+            put(root, listOf(headerLogo, waitingBanner, betButton))
+        }
+        val controller = ExposedTestAccessibilityController(treeMap)
+
+        val scan = controller.scan(root)
+        assertEquals(com.example.data.model.SiteButtonState.IDLE_READY_TO_BET, scan.siteButtonState)
+        assertTrue(scan.isBetBtnDetected)
+        assertEquals(1580, scan.betButtonBounds?.centerY())
+    }
+
+    @Test
     fun `accessibility service safely handles null events, null root window, and invalid gesture coordinates`() {
         val service = com.example.service.ScreenEarnerAccessibilityService()
         service.onAccessibilityEvent(null)

@@ -74,6 +74,7 @@ import com.example.data.engine.AutomationState
 import com.example.data.engine.OperatingScheduleEvaluator
 import com.example.data.engine.SmartAgentExplanation
 import com.example.data.model.CrashRecord
+import com.example.data.model.FloatingShortcut
 import com.example.data.model.GameState
 import com.example.data.model.MonitoringStatus
 import com.example.data.model.StrategyConfig
@@ -111,7 +112,11 @@ fun HomeScreen(
     onStopAlarm: () -> Unit = {},
     onSnoozeAlarm: () -> Unit = {},
     onEndSessionAndClearData: () -> Unit = {},
-    onToggleAutoBet: (Boolean) -> Unit = {}
+    onToggleAutoBet: (Boolean) -> Unit = {},
+    betShortcut: FloatingShortcut? = null,
+    cashOutShortcut: FloatingShortcut? = null,
+    onToggleBetHand: () -> Unit = {},
+    onToggleCashOutHand: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -358,6 +363,15 @@ fun HomeScreen(
                 }
             }
         }
+
+        ExecutionHandsControlCard(
+            isAutoBetEnabled = config.isAutoBetEnabled,
+            betShortcut = betShortcut,
+            cashOutShortcut = cashOutShortcut,
+            onToggleAutoBet = onToggleAutoBet,
+            onToggleBetHand = onToggleBetHand,
+            onToggleCashOutHand = onToggleCashOutHand
+        )
 
         // Master Live Automation Toggle Card
         Card(
@@ -688,6 +702,91 @@ private fun ModuleTileButton(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+}
+
+@Composable
+fun ExecutionHandsControlCard(
+    isAutoBetEnabled: Boolean,
+    betShortcut: FloatingShortcut?,
+    cashOutShortcut: FloatingShortcut?,
+    onToggleAutoBet: (Boolean) -> Unit,
+    onToggleBetHand: () -> Unit,
+    onToggleCashOutHand: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Auto-Bet & Cash Out Execution",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (isAutoBetEnabled) "Active when monitoring runs" else "Observation-only mode",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = isAutoBetEnabled,
+                    onCheckedChange = onToggleAutoBet
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onToggleBetHand,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).testTag("toggle_bet_hand_btn")
+                ) {
+                    Text(
+                        text = if (betShortcut?.isCalibrated == true) {
+                            "BET (${betShortcut.targetX.toInt()}, ${betShortcut.targetY.toInt()})"
+                        } else {
+                            "+ BET Hand"
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onToggleCashOutHand,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).testTag("toggle_cash_hand_btn")
+                ) {
+                    Text(
+                        text = if (cashOutShortcut?.isCalibrated == true) {
+                            "CASH (${cashOutShortcut.targetX.toInt()}, ${cashOutShortcut.targetY.toInt()})"
+                        } else {
+                            "+ CASH Hand"
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 }

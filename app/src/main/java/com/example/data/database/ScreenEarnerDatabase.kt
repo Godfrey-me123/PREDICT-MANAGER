@@ -41,7 +41,7 @@ import com.example.data.model.StrategyConfig
         AlarmProfileEntity::class,
         MonitoringSessionEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 @TypeConverters(ScreenEarnerTypeConverters::class)
@@ -167,6 +167,13 @@ abstract class ScreenEarnerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "strategy_configs", "maxStrategyBetAttempts", "INTEGER NOT NULL DEFAULT 2")
+                addColumnIfMissing(db, "strategy_configs", "isMartingaleEnabled", "INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): ScreenEarnerDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -174,8 +181,8 @@ abstract class ScreenEarnerDatabase : RoomDatabase() {
                     ScreenEarnerDatabase::class.java,
                     "screen_earner_db"
                 )
-                    .addMigrations(MIGRATION_10_11, MIGRATION_11_12)
-                    .fallbackToDestructiveMigrationOnDowngrade(true)
+                    .addMigrations(MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                    .fallbackToDestructiveMigration(true)
                     .build()
 
                 INSTANCE = instance

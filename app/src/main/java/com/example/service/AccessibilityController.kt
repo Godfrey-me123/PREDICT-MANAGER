@@ -132,6 +132,11 @@ open class AccessibilityController : AccessibilityService() {
         @Volatile
         var gestureOverlayPassThroughListener: ((isDispatching: Boolean) -> Unit)? = null
 
+        fun notifyOverlayPassThrough(isDispatching: Boolean) {
+            runCatching { gestureOverlayPassThroughListener?.invoke(isDispatching) }
+            runCatching { FloatingHandsOverlayManager.setAllPassThrough(isDispatching) }
+        }
+
         private val _multiplierFlow = MutableStateFlow<Double?>(null)
         val multiplierFlow: StateFlow<Double?> = _multiplierFlow.asStateFlow()
 
@@ -284,7 +289,8 @@ open class AccessibilityController : AccessibilityService() {
 
         fun extractRibbonItemsAndCenterMultiplier(
             candidates: List<MultiplierCandidate>,
-            viewportHeightPx: Int = 0
+            viewportHeightPx: Int = 0,
+            maxCenterY: Int = Int.MAX_VALUE
         ): Pair<List<com.example.data.engine.ExtractedHistoryItem>, Double?> {
             val valid = candidates.filter { it.value >= 1.0 }
             if (valid.isEmpty()) return emptyList<com.example.data.engine.ExtractedHistoryItem>() to null
@@ -391,12 +397,29 @@ open class AccessibilityController : AccessibilityService() {
                 return extractedItems to null
             }
 
-            val belowRibbon = if (ribbonBottomY > Int.MIN_VALUE) {
-                nonRibbon.filter { it.bounds.isEmpty || it.bounds.centerY() > ribbonBottomY }
-            } else {
-                nonRibbon
+            // Exclude any multiplier positioned below the game stage / controls (e.g. All Bets / My Bets / Auto Cash Out rows)
+            val stageFiltered = nonRibbon.filter { cand ->
+                if (cand.bounds.isEmpty) {
+                    true
+                } else {
+                    val cy = cand.bounds.centerY()
+                    val belowStageFloor = maxCenterY < Int.MAX_VALUE && cy >= maxCenterY
+                    val isTopBarLoneChip = viewportHeightPx >= 800 &&
+                        cy < (viewportHeightPx * 0.18f).toInt() &&
+                        cand.bounds.height() <= 70
+                    !belowStageFloor && !isTopBarLoneChip
+                }
             }
-            val centerPool = if (belowRibbon.isNotEmpty()) belowRibbon else nonRibbon
+            if (stageFiltered.isEmpty()) {
+                return extractedItems to null
+            }
+
+            val belowRibbon = if (ribbonBottomY > Int.MIN_VALUE) {
+                stageFiltered.filter { it.bounds.isEmpty || it.bounds.centerY() > ribbonBottomY }
+            } else {
+                stageFiltered
+            }
+            val centerPool = if (belowRibbon.isNotEmpty()) belowRibbon else stageFiltered
 
             val liveCenter = centerPool.maxWithOrNull(
                 compareBy<MultiplierCandidate>(
@@ -1017,7 +1040,8 @@ open class AccessibilityController : AccessibilityService() {
         val ownPkg = runCatching { applicationContext?.packageName }.getOrNull().orEmpty()
 
         var flewAwayDetected = false
-        var waitingDetected = false
+        var waitingNextRoundDetected = false
+        var bettingOpenPromptDetected = false
         var hasExpandableHistoryControl = false
         var hasScrollableHistoryContainer = false
         var stakeBounds: Rect? = null
@@ -1027,12 +1051,13 @@ open class AccessibilityController : AccessibilityService() {
         var doubleBounds: Rect? = null
         var addBounds: Rect? = null
         var betBounds: Rect? = null
+        var bestBetScore = -1
         var cancelBounds: Rect? = null
         var cashOutBounds: Rect? = null
         var scannedCount = 0
         var orderCounter = 0
 
-        fun traverse(node: AccessibilityNodeInfo, depth: Int, inHistoryAncestry: Boolean) {
+        fun traverse(node: AccessibilityNodeInfo, depth: Int, inHistoryAncestry: Boolean, inNonLiveMultiplierContainer: Boolean) {
             if (scannedCount >= MAX_SCAN_NODES || depth > MAX_TREE_DEPTH) return
             val nodePkg = safeNodePackageName(node)
             if (ownPkg.isNotBlank() && nodePkg == ownPkg) return
@@ -1063,6 +1088,30 @@ open class AccessibilityController : AccessibilityService() {
                 lowerId.contains("last_results") ||
                 lowerLabel.contains("round history") ||
                 lowerLabel.contains("last results")
+
+            val nodeInNonLiveMultiplierContainer = inNonLiveMultiplierContainer ||
+                lowerId.contains("all_bets") ||
+                lowerId.contains("my_bets") ||
+                lowerId.contains("top_bets") ||
+                lowerId.contains("live_bets") ||
+                lowerId.contains("bets_list") ||
+                lowerId.contains("bet_list") ||
+                lowerId.contains("players") ||
+                lowerId.contains("leaderboard") ||
+                lowerId.contains("winners") ||
+                lowerId.contains("auto_cash") ||
+                lowerId.contains("autocash") ||
+                lowerId.contains("auto_bet") ||
+                lowerId.contains("autobet") ||
+                lowerId.contains("previous_hand") ||
+                lowerLabel == "all bets" ||
+                lowerLabel == "my bets" ||
+                lowerLabel == "top bets" ||
+                lowerLabel == "previous hand" ||
+                lowerLabel.contains("auto cash") ||
+                lowerLabel.contains("autocash") ||
+                lowerLabel.contains("auto-cash") ||
+                lowerLabel.contains("auto bet")
 
             if (isScrollable && nodeInHistoryContainer) {
                 hasScrollableHistoryContainer = true
@@ -1119,25 +1168,42 @@ open class AccessibilityController : AccessibilityService() {
                 if (!parsedRoundId.isNullOrBlank() && !nodeInHistoryContainer && detectedRoundId == null) {
                     detectedRoundId = parsedRoundId
                 }
-                val matcher = MULTIPLIER_PATTERN.matcher(combinedLabel)
-                while (matcher.find()) {
-                    val rawToken = matcher.group(0)?.trim().orEmpty()
-                    val valParsed = matcher.group(1)?.toDoubleOrNull()
-                    if (valParsed != null && !lowerLabel.contains("auto") && !lowerLabel.contains("target")) {
-                        val nodeBounds = Rect()
-                        try {
-                            node.getBoundsInScreen(nodeBounds)
-                        } catch (_: Throwable) {
+                val isExcludedMultiplierText = lowerLabel.contains("auto") ||
+                    lowerLabel.contains("target") ||
+                    lowerLabel.contains("cash out") ||
+                    lowerLabel.contains("cashout") ||
+                    lowerLabel.contains("payout") ||
+                    lowerLabel.contains("won") ||
+                    lowerLabel.contains("win") ||
+                    lowerLabel.contains("tzs") ||
+                    lowerLabel.contains("zmw") ||
+                    lowerLabel.contains("kes") ||
+                    lowerLabel.contains("ngn") ||
+                    lowerLabel.contains("ghs") ||
+                    lowerLabel.contains("usd") ||
+                    lowerLabel.contains("ugx")
+                val allowCandidate = nodeInHistoryContainer || (!nodeInNonLiveMultiplierContainer && !isExcludedMultiplierText && !isAddressBarNode)
+                if (allowCandidate) {
+                    val matcher = MULTIPLIER_PATTERN.matcher(combinedLabel)
+                    while (matcher.find()) {
+                        val rawToken = matcher.group(0)?.trim().orEmpty()
+                        val valParsed = matcher.group(1)?.toDoubleOrNull()
+                        if (valParsed != null) {
+                            val nodeBounds = Rect()
+                            try {
+                                node.getBoundsInScreen(nodeBounds)
+                            } catch (_: Throwable) {
+                            }
+                            multiplierCandidates += MultiplierCandidate(
+                                value = valParsed,
+                                bounds = nodeBounds,
+                                orderIndex = orderCounter++,
+                                isHistoryHinted = nodeInHistoryContainer,
+                                gameTimestampMs = parsedGameTs,
+                                roundId = parsedRoundId,
+                                displayText = rawToken
+                            )
                         }
-                        multiplierCandidates += MultiplierCandidate(
-                            value = valParsed,
-                            bounds = nodeBounds,
-                            orderIndex = orderCounter++,
-                            isHistoryHinted = nodeInHistoryContainer,
-                            gameTimestampMs = parsedGameTs,
-                            roundId = parsedRoundId,
-                            displayText = rawToken
-                        )
                     }
                 }
 
@@ -1148,13 +1214,16 @@ open class AccessibilityController : AccessibilityService() {
                     flewAwayDetected = true
                 }
 
-                if (lowerLabel.contains("place your bet") ||
-                    lowerLabel.contains("waiting for next round") ||
+                if (lowerLabel.contains("waiting for next round") ||
                     lowerLabel.contains("wait for next round") ||
-                    lowerLabel.contains("betting open") ||
                     lowerLabel.contains("next round")
                 ) {
-                    waitingDetected = true
+                    waitingNextRoundDetected = true
+                }
+                if (lowerLabel.contains("place your bet") ||
+                    lowerLabel.contains("betting open")
+                ) {
+                    bettingOpenPromptDetected = true
                 }
             }
 
@@ -1224,7 +1293,7 @@ open class AccessibilityController : AccessibilityService() {
             }
 
             // 6. Detect CANCEL / BET QUEUED button ("Cancel" / "Cancel Bet")
-            if (cancelBounds == null && (
+            if (cancelBounds == null && !isAddressBarNode && (
                     lowerLabel == "cancel" ||
                         lowerLabel == "cancel bet" ||
                         lowerId.contains("cancel_bet") ||
@@ -1236,30 +1305,47 @@ open class AccessibilityController : AccessibilityService() {
                 if (!rect.isEmpty) cancelBounds = rect
             }
 
-            // 7. Detect BET / Place Bet button (exclude "Cancel", "Bet History", "Betslip", "Auto Bet")
-            if (betBounds == null &&
-                (lowerLabel == "bet" || lowerLabel == "place bet" ||
-                    lowerId.contains("place_bet") ||
-                    lowerId.contains("btn_bet") ||
-                    lowerId.contains("bet_button") ||
-                    (lowerLabel.contains("bet") &&
-                        !lowerLabel.contains("cancel") &&
-                        !lowerLabel.contains("history") &&
-                        !lowerLabel.contains("my bets") &&
-                        !lowerLabel.contains("betslip") &&
-                        !lowerLabel.contains("waiting") &&
-                        !lowerLabel.contains("cash") &&
-                        !lowerLabel.contains("auto")))
-            ) {
-                val rect = Rect()
-                try { node.getBoundsInScreen(rect) } catch (_: Throwable) {}
-                if (!rect.isEmpty) betBounds = rect
+            // 7. Detect BET / Place Bet button (exclude site names, "All Bets", "My Bets", "Cancel", "Auto Bet")
+            val isExcludedBetNode = isAddressBarNode ||
+                lowerAllText.contains("betpawa") ||
+                lowerAllText.contains("sportybet") ||
+                lowerAllText.contains("all bets") ||
+                lowerAllText.contains("my bets") ||
+                lowerAllText.contains("top bets") ||
+                lowerAllText.contains("bet history") ||
+                lowerAllText.contains("betslip") ||
+                lowerLabel.contains("cancel") ||
+                lowerLabel.contains("history") ||
+                lowerLabel.contains("waiting") ||
+                lowerLabel.contains("cash") ||
+                lowerLabel.contains("auto") ||
+                lowerLabel.contains("place your bet")
+            if (!isExcludedBetNode) {
+                val betPriority = when {
+                    lowerLabel == "bet" || lowerLabel == "place bet" ||
+                        lowerLabel.startsWith("bet\n") || lowerLabel.matches(Regex("^bet\\s+\\d.*")) -> 3
+                    lowerId.contains("place_bet") || lowerId.contains("btn_bet") || lowerId.contains("bet_button") -> 2
+                    lowerLabel.contains("bet") -> 1
+                    else -> 0
+                }
+                if (betPriority > bestBetScore) {
+                    val rect = Rect()
+                    try { node.getBoundsInScreen(rect) } catch (_: Throwable) {}
+                    if (!rect.isEmpty) {
+                        betBounds = rect
+                        bestBetScore = betPriority
+                    }
+                }
             }
 
-            // 8. Detect CASH OUT button ("Cash Out" / "Cashout")
+            // 8. Detect CASH OUT button ("Cash Out" / "Cashout", excluding Auto Cash Out controls & history)
             if (cashOutBounds == null &&
+                !isAddressBarNode &&
+                !nodeInNonLiveMultiplierContainer &&
                 (lowerLabel.contains("cash out") || lowerLabel.contains("cashout") || lowerId.contains("cashout")) &&
-                !lowerLabel.contains("auto")
+                !lowerLabel.contains("auto") &&
+                !lowerLabel.contains("history") &&
+                !lowerLabel.contains("cashback")
             ) {
                 val rect = Rect()
                 try { node.getBoundsInScreen(rect) } catch (_: Throwable) {}
@@ -1269,17 +1355,30 @@ open class AccessibilityController : AccessibilityService() {
             val children = childNodesOf(node)
             for (child in children) {
                 if (scannedCount < MAX_SCAN_NODES) {
-                    traverse(child, depth + 1, nodeInHistoryContainer)
+                    traverse(child, depth + 1, nodeInHistoryContainer, nodeInNonLiveMultiplierContainer)
                 }
                 safeRecycleNode(child, rootNode)
             }
         }
 
-        traverse(rootNode, 0, false)
+        traverse(rootNode, 0, inHistoryAncestry = false, inNonLiveMultiplierContainer = false)
+
+        val controlTops = listOfNotNull(
+            betBounds?.takeIf { !it.isEmpty }?.top,
+            cashOutBounds?.takeIf { !it.isEmpty }?.top,
+            cancelBounds?.takeIf { !it.isEmpty }?.top,
+            stakeBounds?.takeIf { !it.isEmpty }?.top,
+            doubleBounds?.takeIf { !it.isEmpty }?.top,
+            addBounds?.takeIf { !it.isEmpty }?.top
+        )
+        val viewportHeightPx = if (!rootRect.isEmpty) rootRect.height() else 0
+        val viewportFloorY = if (viewportHeightPx > 0) (viewportHeightPx * 0.72f).toInt() else Int.MAX_VALUE
+        val maxStageCenterY = controlTops.minOrNull()?.takeIf { it >= 250 } ?: viewportFloorY
 
         val (ribbonItems, liveCenterMultiplier) = extractRibbonItemsAndCenterMultiplier(
             candidates = multiplierCandidates,
-            viewportHeightPx = if (!rootRect.isEmpty) rootRect.height() else 0
+            viewportHeightPx = viewportHeightPx,
+            maxCenterY = maxStageCenterY
         )
         val ribbonMultipliers = ribbonItems.map { it.multiplier }
         val isPanelExpanded = multiplierCandidates.count { it.isHistoryHinted } >= 10 ||
@@ -1288,17 +1387,23 @@ open class AccessibilityController : AccessibilityService() {
 
         val liveCenterBounds = if (liveCenterMultiplier != null) {
             multiplierCandidates
-                .filter { abs(it.value - liveCenterMultiplier) < 0.005 && !it.bounds.isEmpty }
+                .filter {
+                    abs(it.value - liveCenterMultiplier) < 0.005 &&
+                        !it.bounds.isEmpty &&
+                        (maxStageCenterY >= Int.MAX_VALUE || it.bounds.centerY() < maxStageCenterY)
+                }
                 .maxByOrNull { it.bounds.width() * it.bounds.height() }
                 ?.bounds
         } else null
 
         val isCancelDetected = cancelBounds != null
+        val waitingDetected = waitingNextRoundDetected || bettingOpenPromptDetected
         val resolvedButtonState = when {
             flewAwayDetected -> SiteButtonState.CRASHED
             cashOutBounds != null -> SiteButtonState.CASH_OUT_AVAILABLE
-            isCancelDetected || waitingDetected -> SiteButtonState.BET_QUEUED
+            isCancelDetected -> SiteButtonState.BET_QUEUED
             betBounds != null -> SiteButtonState.IDLE_READY_TO_BET
+            waitingNextRoundDetected -> SiteButtonState.BET_QUEUED
             else -> SiteButtonState.UNKNOWN
         }
 
@@ -1480,6 +1585,12 @@ open class AccessibilityController : AccessibilityService() {
                     val formatted = StrategyEngine.formatStakeAmount(newStake)
                     val initialStakeTxt = runCatching { stakeNode.text?.toString().orEmpty() }.getOrDefault("")
                     safeLogD(TAG, "Fetched initial stake='$initialStakeTxt'; applying target='$formatted'")
+                    if (verifyStakeAccepted(initialStakeTxt, newStake)) {
+                        safeRecycleNode(stakeNode, rootNode)
+                        emitDiagnostic("Stake already matches $formattedLabel. Ready.")
+                        onComplete?.invoke(true)
+                        return
+                    }
                     val accepted = writeAndVerifyStakeNode(stakeNode, newStake, formatted, rootNode)
                     safeRecycleNode(stakeNode, rootNode)
                     if (accepted) {
@@ -1527,22 +1638,27 @@ open class AccessibilityController : AccessibilityService() {
         node: AccessibilityNodeInfo,
         keywords: List<String>,
         depth: Int = 0,
-        visited: IntArray = intArrayOf(0)
+        visited: IntArray = intArrayOf(0),
+        excludedTerms: List<String> = emptyList()
     ): AccessibilityNodeInfo? {
         if (depth > MAX_TREE_DEPTH || visited[0] >= MAX_SCAN_NODES) return null
         visited[0]++
 
-        val text = runCatching { node.text?.toString()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
-        val desc = runCatching { node.contentDescription?.toString()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
+        val text = runCatching { node.text?.toString()?.trim()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
+        val desc = runCatching { node.contentDescription?.toString()?.trim()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
+        val viewId = runCatching { node.viewIdResourceName?.trim()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
         val isClickable = runCatching { node.isClickable }.getOrDefault(false)
+        val combined = "$text $desc $viewId"
+        val isAddressBar = viewId.contains("url_bar") || viewId.contains("omnibox") || viewId.contains("location_bar")
+        val isExcluded = isAddressBar || excludedTerms.any { term -> combined.contains(term) }
 
-        if (isClickable && keywords.any { text.contains(it) || desc.contains(it) }) {
+        if (isClickable && !isExcluded && keywords.any { text == it || desc == it || text.contains(it) || desc.contains(it) }) {
             return node
         }
 
         val children = childNodesOf(node)
         for (child in children) {
-            val match = findInteractiveButtonNode(child, keywords, depth + 1, visited)
+            val match = findInteractiveButtonNode(child, keywords, depth + 1, visited, excludedTerms)
             if (match != null) {
                 return match
             }
@@ -1568,7 +1684,11 @@ open class AccessibilityController : AccessibilityService() {
                 try {
                     val targets = scanWindowTargets(root)
                     betBounds = targets.betButtonBounds
-                    val betNode = findInteractiveButtonNode(root, listOf("bet", "place bet", "wager"))
+                    val betNode = findInteractiveButtonNode(
+                        node = root,
+                        keywords = listOf("bet", "place bet", "wager"),
+                        excludedTerms = listOf("betpawa", "sportybet", "all bets", "my bets", "top bets", "bet history", "betslip", "cancel", "auto", "waiting")
+                    )
                     if (betNode != null && runCatching { betNode.isClickable }.getOrDefault(false)) {
                         betClickedViaNode = runCatching { betNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
                         if (betClickedViaNode) {
@@ -1613,7 +1733,11 @@ open class AccessibilityController : AccessibilityService() {
                 try {
                     val targets = scanWindowTargets(root)
                     cashOutBounds = targets.cashOutButtonBounds
-                    val cashNode = findInteractiveButtonNode(root, listOf("cash out", "cashout", "claim"))
+                    val cashNode = findInteractiveButtonNode(
+                        node = root,
+                        keywords = listOf("cash out", "cashout", "claim"),
+                        excludedTerms = listOf("auto", "history", "cashback", "all bets", "my bets")
+                    )
                     if (cashNode != null && runCatching { cashNode.isClickable }.getOrDefault(false)) {
                         cashOutClickedViaNode = runCatching { cashNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
                         if (cashOutClickedViaNode) {
@@ -1772,20 +1896,20 @@ open class AccessibilityController : AccessibilityService() {
 
                 val passThroughListener = gestureOverlayPassThroughListener
                 passThroughStartedAtMs = System.currentTimeMillis()
-                passThroughListener?.invoke(true)
+                notifyOverlayPassThrough(true)
 
                 // Safety watchdog so overlays never remain stuck untouchable if OS drops gesture callback
                 pendingOverlayRestoreRunnable?.let { mainHandler.removeCallbacks(it) }
                 val restoreWatchdog = Runnable {
                     try {
-                        gestureOverlayPassThroughListener?.invoke(false)
+                        notifyOverlayPassThrough(false)
                     } catch (_: Throwable) {
                     }
                 }
                 pendingOverlayRestoreRunnable = restoreWatchdog
                 mainHandler.postDelayed(restoreWatchdog, 600L)
 
-                val dispatchDelayMs = if (passThroughListener != null) 45L else 0L
+                val dispatchDelayMs = if (passThroughListener != null || FloatingHandsOverlayManager.hasVisibleHands()) 45L else 0L
                 val gestureRunnable = object : Runnable {
                     override fun run() {
                         pendingGestureRunnables.remove(this)
@@ -2088,7 +2212,7 @@ open class AccessibilityController : AccessibilityService() {
         mainHandler.postDelayed({
             try {
                 if (pendingGestureRunnables.isEmpty()) {
-                    gestureOverlayPassThroughListener?.invoke(false)
+                    notifyOverlayPassThrough(false)
                 }
             } catch (_: Throwable) {
             }

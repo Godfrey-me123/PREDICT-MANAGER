@@ -147,7 +147,9 @@ data class StrategyConfig(
     val gridColumns: Int = 8, // 7 or 8
     val monitoringEnabled: Boolean = true,
     val pixelColorCaptureEnabled: Boolean = false,
-    val ruleConfigsJson: String = serializeRuleConfigs(defaultRuleConfigs())
+    val ruleConfigsJson: String = serializeRuleConfigs(defaultRuleConfigs()),
+    val maxStrategyBetAttempts: Int = 2,
+    val isMartingaleEnabled: Boolean = false
 ) {
     fun getRuleConfigs(): List<StrategyRuleConfig> = deserializeRuleConfigs(ruleConfigsJson)
 

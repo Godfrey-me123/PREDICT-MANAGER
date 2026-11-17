@@ -116,6 +116,12 @@ fun StrategyScreen(
     var monitoringEnabled by remember(config.monitoringEnabled) {
         mutableStateOf(config.monitoringEnabled)
     }
+    var maxAttemptsText by remember(config.maxStrategyBetAttempts) {
+        mutableStateOf(config.maxStrategyBetAttempts.toString())
+    }
+    var martingaleEnabled by remember(config.isMartingaleEnabled) {
+        mutableStateOf(config.isMartingaleEnabled)
+    }
 
     var selectedGroupFilter by remember { mutableStateOf<StrategyGroup?>(null) }
     var editingCustomStrategy by remember { mutableStateOf<CustomPatternStrategy?>(null) }
@@ -395,6 +401,21 @@ fun StrategyScreen(
                     checked = monitoringEnabled,
                     testTag = "strategy_monitoring_switch"
                 ) { monitoringEnabled = it }
+                OutlinedTextField(
+                    value = maxAttemptsText,
+                    onValueChange = { maxAttemptsText = it },
+                    label = { Text("Max Strategy Bet Attempts per Event") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("max_strategy_attempts_input")
+                )
+                StrategyToggleRow(
+                    label = "Martingale Progression (Double stake on loss, reset on win)",
+                    checked = martingaleEnabled,
+                    testTag = "martingale_switch"
+                ) { martingaleEnabled = it }
             }
         }
 
@@ -408,6 +429,7 @@ fun StrategyScreen(
                     val parsedLow = lowThreshText.trim().toDoubleOrNull()
                     val parsedBig = bigThreshText.trim().toDoubleOrNull()
                     val parsedConsec = defaultConsecutiveText.trim().toIntOrNull()
+                    val parsedMaxAttempts = maxAttemptsText.trim().toIntOrNull()?.coerceAtLeast(1) ?: 2
 
                     if (parsedLow == null || !parsedLow.isFinite() || parsedLow < 1.01 ||
                         parsedBig == null || !parsedBig.isFinite() || parsedBig <= parsedLow ||
@@ -428,7 +450,9 @@ fun StrategyScreen(
                         strategy1LowThreshold = parsedLow,
                         strategy1RequiredLowRounds = parsedConsec,
                         strategy2HighThreshold = parsedBig,
-                        monitoringEnabled = monitoringEnabled
+                        monitoringEnabled = monitoringEnabled,
+                        maxStrategyBetAttempts = parsedMaxAttempts,
+                        isMartingaleEnabled = martingaleEnabled
                     )
                     onSaveConfig(updatedConfig)
                 } catch (e: Exception) {

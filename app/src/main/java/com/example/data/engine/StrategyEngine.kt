@@ -735,9 +735,9 @@ class StrategyEngine {
                 )
             )
 
-            if (wins >= targetWins && !shouldContinueBettingBasedOnHourRule(currentTimeMs)) {
-                val resetBase = roundStake(config.baseStake)
-                // Fetched required verified wins -> release session lock and reset cleanly
+            val resetBase = roundStake(config.baseStake)
+            val shouldResetOnWin = config.isMartingaleEnabled || (wins >= targetWins && !shouldContinueBettingBasedOnHourRule(currentTimeMs))
+            if (shouldResetOnWin) {
                 state = state.copy(
                     isBettingSessionActive = false,
                     sessionStartedTimestamp = 0L,
@@ -760,7 +760,7 @@ class StrategyEngine {
                     targetMultiplier = config.targetMultiplier,
                     stakeLevel = 1,
                     isSessionActive = false,
-                    reason = "Target $targetWins Wins Fetched -> Reset to Base Stake"
+                    reason = if (config.isMartingaleEnabled) "Martingale Win -> Reset to Base Stake" else "Target $targetWins Wins Fetched -> Reset to Base Stake"
                 )
             } else {
                 state = state.copy(
@@ -782,15 +782,19 @@ class StrategyEngine {
             val losses = state.consecutiveLossesInSession + 1
 
             val isHighMultLoss = config.isHighMultiplierLossRuleEnabled && multiplier > 13.00
-            val nextStake = calculateNextStakeAfterLoss(
-                currentStake = state.currentCalculatedStake,
-                progressionMode = activeMode,
-                customAddAmount = activeAddAmount,
-                lossMultiplier = multiplier,
-                isHighMultiplierLossRuleEnabled = config.isHighMultiplierLossRuleEnabled
-            )
+            val nextStake = if (config.isMartingaleEnabled) {
+                roundStake(state.currentCalculatedStake * 2.0)
+            } else {
+                calculateNextStakeAfterLoss(
+                    currentStake = state.currentCalculatedStake,
+                    progressionMode = activeMode,
+                    customAddAmount = activeAddAmount,
+                    lossMultiplier = multiplier,
+                    isHighMultiplierLossRuleEnabled = config.isHighMultiplierLossRuleEnabled
+                )
+            }
 
-            safeLogI("Bet Lost. Session losses: $losses, mode: $activeMode, next stake ready: $nextStake")
+            safeLogI("Bet Lost. Session losses: $losses, mode: $activeMode, martingale: ${config.isMartingaleEnabled}, next stake ready: $nextStake")
 
             if (isHighMultLoss) {
                 highMultiplierLossTimestamps.add(currentTimeMs)
@@ -820,12 +824,12 @@ class StrategyEngine {
 
             publishStakeInstruction(
                 stake = nextStake,
-                mode = if (isHighMultLoss) StakeProgressionMode.DOUBLE_AMOUNT else activeMode,
+                mode = if (config.isMartingaleEnabled || isHighMultLoss) StakeProgressionMode.DOUBLE_AMOUNT else activeMode,
                 addAmount = activeAddAmount,
                 targetMultiplier = config.targetMultiplier,
                 stakeLevel = newLevel,
                 isSessionActive = true,
-                reason = "Loss #$losses (${activeMode.label}) -> Next Stake ${formatStakeAmount(nextStake)}"
+                reason = "Loss #$losses (${if (config.isMartingaleEnabled) "Martingale 2x" else activeMode.label}) -> Next Stake ${formatStakeAmount(nextStake)}"
             )
         }
 

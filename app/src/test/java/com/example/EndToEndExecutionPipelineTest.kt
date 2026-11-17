@@ -548,4 +548,162 @@ class EndToEndExecutionPipelineTest {
         )
         assertEquals(1, betClicks)
     }
+
+    @Test
+    fun `manual bet with auto cashout enabled does not fire below 1_20x on transient frames and cashes out at 2_00x`() = runBlocking {
+        var cashOutClicks = 0
+        val requestedGestures = mutableListOf<String>()
+        val (_, repo, engine) = setupIsolatedControllerWithFakeInteractor(
+            onClickCashOut = { _, _ -> cashOutClicks++; true }
+        )
+        engine.onGestureDispatchRequested = { _, _, label ->
+            requestedGestures.add(label)
+        }
+        val notices = mutableListOf<Pair<StrategyNotificationType, String>>()
+        engine.onExecutionNotification = { type, title, _, _, _ ->
+            notices.add(type to title)
+        }
+
+        val config = StrategyConfig(
+            baseStake = 10.0,
+            targetMultiplier = 2.00,
+            isAutoBetEnabled = false,
+            isAutoCashOutEnabled = true
+        )
+        repo.saveStrategyConfig(config)
+        repo.saveRiskLimits(RiskLimits())
+        delay(60L)
+
+        AutomationController.startMonitoringSession(isAccessibilityConnected = true, nowMs = 1_700_000_000_000L)
+        engine.updateCalibratedShortcuts(
+            listOf(FloatingShortcut(id = 2, label = "CASH OUT HAND", type = ShortcutType.CASH_OUT, targetPlatform = "BetPawa", targetX = 720f, targetY = 1200f, targetMultiplier = 2.00, isCalibrated = true))
+        )
+
+        // Prior round crashed at 3.50x so currentMultiplier in state would have been 3.50x if stale fallback existed;
+        // IN_FLIGHT with null liveMult + 1.15x must NEVER trigger cash-out at < 1.20x when target is 2.00x.
+        AutomationController.processDetectionEvent(
+            buildDetection("CRASHED", SiteButtonState.CRASHED, liveMult = 3.50, ribbon = listOf(3.50, 1.80), balance = 1000.0, roundId = "R-40", nowMs = 1_700_000_001_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_001_000L
+        )
+        AutomationController.processDetectionEvent(
+            buildDetection("IN_FLIGHT", SiteButtonState.IDLE_READY_TO_BET, liveMult = null, ribbon = listOf(3.50, 1.80), balance = 990.0, roundId = "R-41", nowMs = 1_700_000_003_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_003_000L
+        )
+        AutomationController.processDetectionEvent(
+            buildDetection("IN_FLIGHT", SiteButtonState.CASH_OUT_AVAILABLE, liveMult = 1.15, ribbon = listOf(3.50, 1.80), balance = 990.0, roundId = "R-41", nowMs = 1_700_000_004_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_004_000L
+        )
+        assertEquals(0, cashOutClicks)
+
+        // Reaches 2.02x with manual bet's CASH_OUT_AVAILABLE visible -> cashes out and notifies
+        AutomationController.processDetectionEvent(
+            buildDetection("IN_FLIGHT", SiteButtonState.CASH_OUT_AVAILABLE, liveMult = 2.02, ribbon = listOf(3.50, 1.80), balance = 990.0, roundId = "R-41", nowMs = 1_700_000_007_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_007_000L
+        )
+        assertEquals(1, cashOutClicks)
+        assertTrue(requestedGestures.contains("CASH OUT"))
+        assertTrue(notices.any { it.second.contains("Waiting for Cash Out", ignoreCase = true) })
+        assertTrue(notices.any { it.second.contains("Cashing Out", ignoreCase = true) })
+        assertTrue(notices.any { it.second.contains("Cash Out Confirmed", ignoreCase = true) })
+    }
+
+    @Test
+    fun `emits full action lifecycle notifications from waiting to bet through round settlement`() = runBlocking {
+        val (_, repo, engine) = setupIsolatedControllerWithFakeInteractor(
+            onApplyStake = { _, _ -> true },
+            onClickBet = { _, _ -> true },
+            onClickCashOut = { _, _ -> true }
+        )
+        val actionTitles = mutableListOf<String>()
+        engine.onExecutionNotification = { type, title, _, _, _ ->
+            if (type == StrategyNotificationType.AUTOMATION_ACTION) {
+                actionTitles.add(title)
+            }
+        }
+
+        val config = StrategyConfig(
+            isStrategy1Enabled = false,
+            isStrategy2Enabled = false,
+            isHighMultiplierLossRuleEnabled = false,
+            baseStake = 5.0,
+            targetMultiplier = 2.00,
+            isAutoBetEnabled = true,
+            isAutoCashOutEnabled = true
+        ).withUpdatedRule(
+            StrategyRuleConfig(
+                ruleId = StrategyRuleId.AFTER_3_LOSSES,
+                isEnabled = true,
+                progressionMode = StakeProgressionMode.DOUBLE_AMOUNT,
+                requiredLosses = 3,
+                targetWinsToFetch = 1
+            )
+        )
+        repo.saveStrategyConfig(config)
+        repo.saveRiskLimits(RiskLimits())
+        delay(60L)
+
+        AutomationController.startMonitoringSession(isAccessibilityConnected = true, nowMs = 1_700_000_000_000L)
+        engine.updateCalibratedShortcuts(
+            listOf(
+                FloatingShortcut(id = 1, label = "BET HAND", type = ShortcutType.BET, targetPlatform = "BetPawa", targetX = 500f, targetY = 1200f, isCalibrated = true),
+                FloatingShortcut(id = 2, label = "CASH OUT HAND", type = ShortcutType.CASH_OUT, targetPlatform = "BetPawa", targetX = 720f, targetY = 1200f, targetMultiplier = 2.00, isCalibrated = true)
+            )
+        )
+
+        // Baseline + waiting to bet before 3 consecutive lows
+        AutomationController.processDetectionEvent(
+            buildDetection("BETTING_OPEN", SiteButtonState.IDLE_READY_TO_BET, ribbon = listOf(3.10, 4.20), balance = 1000.0, roundId = "R-50", nowMs = 1_700_000_001_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_001_000L
+        )
+        val ribbons = listOf(
+            listOf(1.10, 3.10, 4.20),
+            listOf(1.25, 1.10, 3.10),
+            listOf(1.40, 1.25, 1.10)
+        )
+        listOf(1.10 to "R-51", 1.25 to "R-52", 1.40 to "R-53").forEachIndexed { idx, (mult, rid) ->
+            AutomationController.processDetectionEvent(
+                buildDetection("CRASHED", SiteButtonState.CRASHED, liveMult = mult, ribbon = ribbons[idx], balance = 1000.0, roundId = rid, nowMs = 1_700_000_003_000L + idx * 3_000L),
+                isAccessibilityConnected = true,
+                nowMs = 1_700_000_003_000L + idx * 3_000L
+            )
+        }
+        assertTrue(engine.strategyEngine.getState().isBettingSessionActive)
+
+        // Next round: BETTING_OPEN -> IN_FLIGHT -> 2.10x -> CRASHED
+        AutomationController.processDetectionEvent(
+            buildDetection("BETTING_OPEN", SiteButtonState.IDLE_READY_TO_BET, ribbon = listOf(1.40, 1.25, 1.10), balance = 1000.0, roundId = "R-54", nowMs = 1_700_000_015_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_015_000L
+        )
+        // Transient IN_FLIGHT frame with IDLE_READY_TO_BET must NOT prematurely settle before CASH_OUT_AVAILABLE appears
+        AutomationController.processDetectionEvent(
+            buildDetection("IN_FLIGHT", SiteButtonState.IDLE_READY_TO_BET, liveMult = 1.05, ribbon = listOf(1.40, 1.25, 1.10), balance = 995.0, roundId = "R-54", nowMs = 1_700_000_016_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_016_000L
+        )
+        AutomationController.processDetectionEvent(
+            buildDetection("IN_FLIGHT", SiteButtonState.CASH_OUT_AVAILABLE, liveMult = 2.10, ribbon = listOf(1.40, 1.25, 1.10), balance = 995.0, roundId = "R-54", nowMs = 1_700_000_019_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_019_000L
+        )
+        AutomationController.processDetectionEvent(
+            buildDetection("CRASHED", SiteButtonState.CRASHED, liveMult = 2.40, ribbon = listOf(2.40, 1.40, 1.25), balance = 1005.0, roundId = "R-54", nowMs = 1_700_000_021_000L),
+            isAccessibilityConnected = true,
+            nowMs = 1_700_000_021_000L
+        )
+
+        assertTrue(actionTitles.any { it.contains("Waiting to Bet", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Placing Bet", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Bet Placed", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Waiting for Cash Out", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Cashing Out", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Cash Out Confirmed", ignoreCase = true) })
+        assertTrue(actionTitles.any { it.contains("Round Won", ignoreCase = true) })
+        assertTrue(actionTitles.none { it.contains("Balance", ignoreCase = true) })
+    }
 }

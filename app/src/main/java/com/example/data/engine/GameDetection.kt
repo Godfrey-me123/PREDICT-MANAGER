@@ -366,9 +366,9 @@ class GameDetection {
 
         val displayMultiplier = when {
             detection.liveDetectionLost || phase == "LIVE_DETECTION_LOST" -> 0.0
-            phase == "IN_FLIGHT" -> multiplier ?: current.currentMultiplier
+            phase == "IN_FLIGHT" -> multiplier?.takeIf { it >= 1.0 } ?: 0.0
             phase == "CRASHED" -> multiplier ?: lastSettledRoundValue ?: 0.0
-            else -> multiplier ?: 0.0
+            else -> 0.0
         }
 
         val hasRibbon = targets.ribbonItems.isNotEmpty() || targets.ribbonMultipliers.isNotEmpty()
@@ -837,9 +837,9 @@ class GameDetection {
         // Never freeze stale live multiplier on LIVE_DETECTION_LOST
         val displayMultiplier = when {
             detection.liveDetectionLost || phase == "LIVE_DETECTION_LOST" -> 0.0
-            phase == "IN_FLIGHT" -> multiplier ?: current.currentMultiplier
+            phase == "IN_FLIGHT" -> multiplier?.takeIf { it >= 1.0 } ?: 0.0
             phase == "CRASHED" -> multiplier ?: lastSettledRoundValue ?: lastInFlightMultiplier ?: 0.0
-            else -> multiplier ?: 0.0
+            else -> 0.0
         }
 
         val incomingBalance = targets.detectedBalance
