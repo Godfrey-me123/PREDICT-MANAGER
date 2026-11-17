@@ -2,12 +2,15 @@ package com.example
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.graphics.Rect
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.ScreenEarnerDatabase
 import com.example.data.database.ScreenEarnerRepository
@@ -21,11 +24,14 @@ import com.example.data.model.GameState
 import com.example.data.model.MonitoringStatus
 import com.example.data.model.NotificationSettings
 import com.example.data.model.RoundLifecycleState
+import com.example.data.model.StrategyConfig
 import com.example.service.AlarmAudioController
+import com.example.service.AlarmStopReceiver
 import com.example.service.AndroidSystemNotificationDispatcher
 import com.example.service.AutomationController
 import com.example.service.DetectedUiTargets
 import com.example.service.GameDetectionState
+import com.example.service.OverlaySettingsPanelComposable
 import com.example.service.ScreenEarnerOverlayService
 import com.example.ui.components.LiveCrashHeaderCard
 import com.example.ui.screens.SettingsAppearanceScreen
@@ -385,6 +391,21 @@ class LivePipelineAndOverlayTest {
     }
 
     @Test
+    fun `AlarmStopReceiver stops ringing alarm in background without launching activity`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val settings = NotificationSettings(highPriorityAlarmEnabled = true)
+        AlarmAudioController.clearSnooze()
+        AlarmAudioController.startAlarm(context = null, settings = settings, title = "Background Stop Test")
+        assertTrue(AlarmAudioController.isAlarmRinging.value)
+
+        val receiver = AlarmStopReceiver()
+        receiver.onReceive(context, Intent(AlarmAudioController.ACTION_STOP_ALARM))
+
+        assertFalse(AlarmAudioController.isAlarmRinging.value)
+        assertNull(AlarmAudioController.activeAlarmTitle.value)
+    }
+
+    @Test
     fun `LiveCrashHeaderCard and SettingsAppearanceScreen separate Round ID from Session Crashes and show Pattern Match profiles`() {
         composeRule.setContent {
             AutoPredictorTheme {
@@ -421,5 +442,64 @@ class LivePipelineAndOverlayTest {
         composeRule.onNodeWithTag("settings_test_alarm_btn").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_stop_alarm_btn").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_snooze_alarm_btn").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `OverlaySettingsPanelComposable saves changes in overlay mode and expands to Full Screen only when tapped`() {
+        var savedConfig: StrategyConfig? = null
+        var expandCount = 0
+        var closeCount = 0
+        var stopAlarmCount = 0
+
+        composeRule.setContent {
+            AutoPredictorTheme {
+                OverlaySettingsPanelComposable(
+                    strategyConfig = StrategyConfig(
+                        baseStake = 10.0,
+                        targetMultiplier = 2.0,
+                        isAutoBetEnabled = false
+                    ),
+                    notificationSettings = NotificationSettings(),
+                    isMonitoringRunning = true,
+                    isAlarmRinging = true,
+                    activeAlarmTitle = "PATTERN MATCH — Aviator",
+                    onSaveOverlaySettings = { cfg, _, _, _, _ -> savedConfig = cfg },
+                    onStopAlarm = { stopAlarmCount++ },
+                    onExpandFullScreen = { expandCount++ },
+                    onClose = { closeCount++ }
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("overlay_settings_window").assertIsDisplayed()
+        composeRule.onNodeWithTag("overlay_settings_alarm_banner").assertIsDisplayed()
+
+        // Stop alarm inside overlay settings
+        composeRule.onNodeWithTag("overlay_settings_stop_alarm_btn").performClick()
+        assertEquals(1, stopAlarmCount)
+
+        // Toggle auto-bet and update stake to 1.0 + target 2.50 directly inside overlay
+        composeRule.onNodeWithTag("overlay_settings_auto_bet_switch").performClick()
+        composeRule.onNodeWithTag("overlay_settings_base_stake_input").performTextReplacement("1.0")
+        composeRule.onNodeWithTag("overlay_settings_target_multiplier_input").performTextReplacement("2.50")
+
+        // Save in overlay mode without navigating to Full Screen
+        composeRule.onNodeWithTag("overlay_settings_save_btn").performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(0, expandCount)
+        assertTrue(savedConfig != null)
+        assertTrue(savedConfig!!.isAutoBetEnabled)
+        assertEquals(1.0, savedConfig!!.baseStake, 0.001)
+        assertEquals(2.50, savedConfig!!.targetMultiplier, 0.001)
+
+        // Tapping Full Screen explicitly expands
+        composeRule.onNodeWithTag("overlay_settings_fullscreen_btn").performClick()
+        assertEquals(1, expandCount)
+
+        // Tapping Close dismisses overlay settings
+        composeRule.onNodeWithTag("overlay_settings_close_btn").performClick()
+        assertEquals(1, closeCount)
     }
 }

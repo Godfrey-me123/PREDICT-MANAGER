@@ -108,6 +108,8 @@ object AlarmAudioController {
     private var mediaPlayer: MediaPlayer? = null
     private var autoStopJob: Job? = null
     private var activeVibrator: Vibrator? = null
+    @Volatile
+    private var lastAppContext: Context? = null
 
     fun vibrationTimingsFor(patternKey: String): LongArray = when (patternKey.uppercase()) {
         "SHORT_PULSE" -> longArrayOf(0L, 120L, 100L, 120L)
@@ -177,6 +179,9 @@ object AlarmAudioController {
     fun isAlarmSnoozed(nowMs: Long = System.currentTimeMillis()): Boolean =
         _snoozedUntilMs.value > nowMs
 
+    const val ALARM_NOTIFICATION_ID = 9999
+    const val ACTION_STOP_ALARM = "com.example.action.STOP_ALARM"
+
     fun startAlarm(
         context: Context?,
         settings: NotificationSettings,
@@ -207,9 +212,54 @@ object AlarmAudioController {
             _lastAudioStatus.value = "Device alarm volume is muted (0); triggering vibration only."
         }
 
-        stopAlarm()
+        lastAppContext = context.applicationContext
+        stopAlarm(context)
         _isAlarmRinging.value = true
         _activeAlarmTitle.value = title
+
+        runCatching {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                AndroidSystemNotificationDispatcher.ensureAllChannels(context, settings)
+            }
+            val stopIntent = Intent(context, AlarmStopReceiver::class.java).apply {
+                action = ACTION_STOP_ALARM
+            }
+            val stopActionPendingIntent = PendingIntent.getBroadcast(
+                context,
+                2002,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val stopTapPendingIntent = PendingIntent.getBroadcast(
+                context,
+                2003,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val stopDeletePendingIntent = PendingIntent.getBroadcast(
+                context,
+                2004,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val channelId = AndroidSystemNotificationDispatcher.resolveVersionedChannelId(
+                AndroidSystemNotificationDispatcher.CHANNEL_ALARM, settings
+            )
+            val builder = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(R.mipmap.ic_launcher_round)
+                .setContentTitle(title)
+                .setContentText("Alarm ringing — tap STOP ALARM or swipe away to silence.")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setAutoCancel(true)
+                .setSilent(true)
+                .setContentIntent(stopTapPendingIntent)
+                .setDeleteIntent(stopDeletePendingIntent)
+                .addAction(R.mipmap.ic_launcher_round, "STOP ALARM", stopActionPendingIntent)
+
+            nm?.notify(ALARM_NOTIFICATION_ID, builder.build())
+        }
 
         val uri = resolveSoundUri(settings.alarmSoundUri, isAlarm = true)
         if (uri != null && alarmVol > 0) {
@@ -225,11 +275,11 @@ object AlarmAudioController {
                     isLooping = settings.alarmRepeated
                     setOnCompletionListener {
                         if (!settings.alarmRepeated) {
-                            stopAlarm()
+                            stopAlarm(context)
                         }
                     }
                     setOnErrorListener { _, _, _ ->
-                        stopAlarm()
+                        stopAlarm(context)
                         true
                     }
                     prepare()
@@ -250,11 +300,11 @@ object AlarmAudioController {
         autoStopJob?.cancel()
         autoStopJob = scope.launch {
             delay(maxDurationMs)
-            stopAlarm()
+            stopAlarm(context)
         }
     }
 
-    fun stopAlarm() {
+    fun stopAlarm(context: Context? = null) {
         autoStopJob?.cancel()
         autoStopJob = null
         runCatching {
@@ -269,6 +319,14 @@ object AlarmAudioController {
         activeVibrator = null
         _isAlarmRinging.value = false
         _activeAlarmTitle.value = null
+
+        val ctx = context ?: lastAppContext ?: com.example.service.ScreenEarnerAccessibilityService.instance?.applicationContext
+        if (ctx != null) {
+            runCatching {
+                val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.cancel(ALARM_NOTIFICATION_ID)
+            }
+        }
     }
 
     fun snoozeAlarm(snoozeMinutes: Int = 5, nowMs: Long = System.currentTimeMillis()) {
@@ -599,6 +657,18 @@ object AndroidSystemNotificationDispatcher : SystemNotificationDispatcher {
             }
             if (vibrationEnabled && isAlarmChannel) {
                 builder.setVibrate(longArrayOf(0L, 250L, 120L, 250L))
+            }
+            if (isAlarmChannel) {
+                val stopIntent = Intent(context, AlarmStopReceiver::class.java).apply {
+                    action = AlarmAudioController.ACTION_STOP_ALARM
+                }
+                val stopPi = PendingIntent.getBroadcast(
+                    context,
+                    2005,
+                    stopIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                builder.addAction(R.mipmap.ic_launcher_round, "STOP ALARM", stopPi)
             }
 
             nm.notify(notificationId, builder.build())

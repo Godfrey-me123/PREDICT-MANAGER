@@ -17,6 +17,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -142,6 +143,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         const val PREF_BUBBLE_OPACITY = "bubble_opacity"
         const val PREF_BUBBLE_SIZE_DP = "bubble_size_dp"
         const val PREF_HAPTICS_ENABLED = "haptics_enabled"
+        const val ACTION_OPEN_OVERLAY_SETTINGS = "ACTION_OPEN_OVERLAY_SETTINGS"
 
         var isRunning = false
             private set
@@ -178,7 +180,11 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     private var panelView: View? = null
     private var panelParams: WindowManager.LayoutParams? = null
 
+    private var settingsOverlayView: View? = null
+    private var settingsOverlayParams: WindowManager.LayoutParams? = null
+
     private var isPanelVisible = false
+    private var isSettingsOverlayVisible = false
     private var statusBannerMessage = MutableStateFlow<String?>(null)
     private var wakeLock: PowerManager.WakeLock? = null
     private var isKeepAwakeEngaged = false
@@ -198,18 +204,24 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "ACTION_STOP_MONITORING") {
-            AutomationController.stopMonitoringSession()
-            runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
+        when (intent?.action) {
+            "ACTION_STOP_MONITORING" -> {
+                AutomationController.stopMonitoringSession()
+                runCatching {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        stopForeground(true)
+                    }
                 }
+                stopSelf()
+                return START_NOT_STICKY
             }
-            stopSelf()
-            return START_NOT_STICKY
+            ACTION_OPEN_OVERLAY_SETTINGS -> {
+                removeCompactControlPanel()
+                showSettingsOverlayPanel()
+            }
         }
         return START_STICKY
     }
@@ -260,7 +272,32 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
 
         setupFloatingBubbleOverlay()
         setupSessionStatsHudOverlay()
+        registerGesturePassThroughListener()
         observeKeepAwakeAndDiagnostics()
+    }
+
+    private fun registerGesturePassThroughListener() {
+        AccessibilityController.gestureOverlayPassThroughListener = { isDispatching ->
+            val wm = windowManager
+            if (wm != null) {
+                fun updateTouchable(view: View?, params: WindowManager.LayoutParams?) {
+                    if (view == null || params == null || !view.isAttachedToWindow) return
+                    val nextFlags = if (isDispatching) {
+                        params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    } else {
+                        params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                    }
+                    if (params.flags != nextFlags) {
+                        params.flags = nextFlags
+                        runCatching { wm.updateViewLayout(view, params) }
+                    }
+                }
+                updateTouchable(bubbleView, bubbleParams)
+                updateTouchable(sessionHudView, sessionHudParams)
+                updateTouchable(panelView, panelParams)
+                updateTouchable(settingsOverlayView, settingsOverlayParams)
+            }
+        }
     }
 
     private fun observeKeepAwakeAndDiagnostics() {
@@ -345,6 +382,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
             if (applyToView(bubbleView, bubbleParams)) anyUpdated = true
             if (applyToView(sessionHudView, sessionHudParams)) anyUpdated = true
             if (applyToView(panelView, panelParams)) anyUpdated = true
+            if (applyToView(settingsOverlayView, settingsOverlayParams)) anyUpdated = true
 
             if (keepOn) {
                 if (anyUpdated) {
@@ -407,7 +445,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     private inner class DraggableOverlayLayout(
         context: Context,
         private val layoutParams: WindowManager.LayoutParams,
-        private val onPositionSaved: ((Int, Int) -> Unit)? = null
+        private val onPositionSaved: ((Int, Int) -> Unit)? = null,
+        private val onBackPressed: (() -> Unit)? = null
     ) : FrameLayout(context) {
         private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         private var initialX = 0
@@ -423,6 +462,17 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
             setViewTreeLifecycleOwner(this@ScreenEarnerOverlayService)
             setViewTreeViewModelStoreOwner(this@ScreenEarnerOverlayService)
             setViewTreeSavedStateRegistryOwner(this@ScreenEarnerOverlayService)
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            if (onBackPressed != null &&
+                event.keyCode == KeyEvent.KEYCODE_BACK &&
+                event.action == KeyEvent.ACTION_UP
+            ) {
+                onBackPressed.invoke()
+                return true
+            }
+            return super.dispatchKeyEvent(event)
         }
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -825,6 +875,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                     val bannerMsg by statusBannerMessage.collectAsState()
                     val isScreenHeld by isScreenHeldState.collectAsState()
                     val awakeError by awakeErrorState.collectAsState()
+                    val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsState()
+                    val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsState()
                     var showExitConfirmation by remember { mutableStateOf(false) }
                     var panelWidthDp by remember { mutableStateOf(initialWidthDp) }
                     var panelHeightDp by remember { mutableStateOf(initialHeightDp) }
@@ -915,6 +967,49 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(16.dp)
                                         )
+                                    }
+                                }
+                            }
+
+                            if (isAlarmRinging) {
+                                Surface(
+                                    color = Color(0xFFFEE2E2),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, ActionStopRed),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("overlay_active_alarm_banner")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = activeAlarmTitle ?: "ALARM RINGING",
+                                            color = ActionStopRed,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Button(
+                                            onClick = { AlarmAudioController.stopAlarm(this@ScreenEarnerOverlayService) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = ActionStopRed,
+                                                contentColor = Color.White
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            modifier = Modifier
+                                                .height(30.dp)
+                                                .testTag("overlay_stop_alarm_btn")
+                                        ) {
+                                            Text("STOP ALARM", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                        }
                                     }
                                 }
                             }
@@ -1110,9 +1205,11 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                         color = Color(0xFF475569),
                                         onClick = {
                                             removeCompactControlPanel()
-                                            openMainActivity(MainActivity.TAB_SETTINGS)
+                                            showSettingsOverlayPanel()
                                         },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("overlay_open_settings_btn")
                                     )
                                 }
 
@@ -1281,8 +1378,194 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         stopSelf()
     }
 
+    private fun showSettingsOverlayPanel() {
+        if (isSettingsOverlayVisible) return
+
+        val density = resources.displayMetrics.density
+        val screenWidthDp = resources.displayMetrics.widthPixels / density
+        val screenHeightDp = resources.displayMetrics.heightPixels / density
+        val cardWidthDp = minOf(screenWidthDp * 0.92f, 410f).coerceAtLeast(280f)
+        val cardMaxHeightDp = minOf(screenHeightDp * 0.74f, 620f).coerceAtLeast(320f)
+
+        val settingsFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+            (if (isKeepAwakeEngaged) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0)
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayLayoutType(),
+            settingsFlags,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = (44 * density).toInt()
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        settingsOverlayParams = params
+
+        val container = DraggableOverlayLayout(
+            context = this,
+            layoutParams = params,
+            onBackPressed = { removeSettingsOverlayPanel() }
+        )
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val initialOpacity = prefs.getFloat(PREF_BUBBLE_OPACITY, 0.95f).coerceIn(0.3f, 1.0f)
+        val initialSizeDp = prefs.getFloat(PREF_BUBBLE_SIZE_DP, 58f).coerceIn(44f, 80f)
+        val initialHaptics = prefs.getBoolean(PREF_HAPTICS_ENABLED, true)
+
+        val engine = AutomationController.engine
+        val repo = AutomationController.repository
+        val automationStateFlow = engine?.automationState ?: MutableStateFlow(AutomationState.IDLE)
+        val standbyFlow = engine?.isStandbyOutsideSchedule ?: MutableStateFlow(false)
+
+        val composeView = ComposeView(this).apply {
+            setContent {
+                AutoPredictorTheme(darkTheme = false) {
+                    val activeConfig by AutomationController.latestConfig.collectAsState()
+                    val activeNotif by AutomationController.latestNotificationSettings.collectAsState()
+                    val automationState by automationStateFlow.collectAsState()
+                    val isStandby by standbyFlow.collectAsState()
+                    val isScreenHeld by isScreenHeldState.collectAsState()
+                    val isCpuHeld by isCpuActiveState.collectAsState()
+                    val awakeError by awakeErrorState.collectAsState()
+                    val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsState()
+                    val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsState()
+
+                    OverlaySettingsPanelComposable(
+                        strategyConfig = activeConfig,
+                        notificationSettings = activeNotif,
+                        isStandbyOutsideSchedule = isStandby,
+                        isScreenHeld = isScreenHeld,
+                        isCpuAwakeHeld = isCpuHeld,
+                        awakeError = awakeError,
+                        isMonitoringRunning = automationState == AutomationState.RUNNING,
+                        isAlarmRinging = isAlarmRinging,
+                        activeAlarmTitle = activeAlarmTitle,
+                        initialBubbleOpacity = initialOpacity,
+                        initialBubbleSizeDp = initialSizeDp,
+                        initialHapticsEnabled = initialHaptics,
+                        onStrategyConfigChanged = { updated ->
+                            serviceScope.launch {
+                                runCatching { repo?.saveStrategyConfig(updated) }
+                            }
+                        },
+                        onNotificationSettingsChanged = { updatedNotif ->
+                            serviceScope.launch {
+                                runCatching { repo?.saveNotificationSettings(updatedNotif) }
+                            }
+                        },
+                        onSaveOverlaySettings = { updatedConfig, updatedNotif, newOpacity, newBubbleSizeDp, newHaptics ->
+                            prefs.edit()
+                                .putFloat(PREF_BUBBLE_OPACITY, newOpacity)
+                                .putFloat(PREF_BUBBLE_SIZE_DP, newBubbleSizeDp)
+                                .putBoolean(PREF_HAPTICS_ENABLED, newHaptics)
+                                .apply()
+                            serviceScope.launch {
+                                runCatching { repo?.saveNotificationSettings(updatedNotif) }
+                                runCatching { repo?.saveStrategyConfig(updatedConfig) }
+                            }
+                            refreshFloatingOverlayAppearance()
+                            runCatching {
+                                Toast.makeText(
+                                    this@ScreenEarnerOverlayService,
+                                    "Overlay settings saved",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            removeSettingsOverlayPanel()
+                        },
+                        onResetSessionStats = {
+                            engine?.resetSessionStats()
+                            runCatching {
+                                Toast.makeText(
+                                    this@ScreenEarnerOverlayService,
+                                    "Session stats reset",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        onStopAlarm = { AlarmAudioController.stopAlarm(this@ScreenEarnerOverlayService) },
+                        onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
+                        onTestAlarm = { notif ->
+                            AlarmAudioController.testSignalAlarm(this@ScreenEarnerOverlayService, notif)
+                        },
+                        onBackToMonitorPanel = {
+                            removeSettingsOverlayPanel()
+                            showCompactControlPanel()
+                        },
+                        onExpandFullScreen = {
+                            removeSettingsOverlayPanel()
+                            openMainActivity(MainActivity.TAB_SETTINGS)
+                        },
+                        onClose = { removeSettingsOverlayPanel() },
+                        modifier = Modifier
+                            .width(cardWidthDp.dp)
+                            .heightIn(max = cardMaxHeightDp.dp)
+                    )
+                }
+            }
+        }
+
+        container.addView(composeView)
+        settingsOverlayView = container
+
+        try {
+            windowManager?.addView(container, params)
+            isSettingsOverlayVisible = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed adding overlay settings panel", e)
+            settingsOverlayView = null
+            settingsOverlayParams = null
+            isSettingsOverlayVisible = false
+        }
+    }
+
+    private fun removeSettingsOverlayPanel() {
+        if (!isSettingsOverlayVisible && settingsOverlayView == null) return
+        settingsOverlayView?.let { settingsView ->
+            runCatching { windowManager?.removeViewImmediate(settingsView) }
+                .onFailure { runCatching { windowManager?.removeView(settingsView) } }
+        }
+        settingsOverlayView = null
+        settingsOverlayParams = null
+        isSettingsOverlayVisible = false
+    }
+
+    private fun refreshFloatingOverlayAppearance() {
+        val savedBubbleX = bubbleParams?.x
+        val savedBubbleY = bubbleParams?.y
+        bubbleView?.let { bubble ->
+            runCatching { windowManager?.removeViewImmediate(bubble) }
+                .onFailure { runCatching { windowManager?.removeView(bubble) } }
+            bubbleView = null
+            bubbleParams = null
+        }
+        setupFloatingBubbleOverlay()
+        if (savedBubbleX != null && savedBubbleY != null) {
+            bubbleParams?.let { params ->
+                params.x = savedBubbleX
+                params.y = savedBubbleY
+                bubbleView?.let { view ->
+                    runCatching { windowManager?.updateViewLayout(view, params) }
+                }
+            }
+        }
+
+        sessionHudView?.let { hud ->
+            runCatching { windowManager?.removeViewImmediate(hud) }
+                .onFailure { runCatching { windowManager?.removeView(hud) } }
+            sessionHudView = null
+            sessionHudParams = null
+        }
+        setupSessionStatsHudOverlay()
+    }
+
     private fun removeAllOverlayViews() {
         removeCompactControlPanel()
+        removeSettingsOverlayPanel()
         sessionHudView?.let { hud ->
             runCatching { windowManager?.removeViewImmediate(hud) }
                 .onFailure { runCatching { windowManager?.removeView(hud) } }
@@ -1343,6 +1626,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
 
     override fun onDestroy() {
         super.onDestroy()
+        AccessibilityController.gestureOverlayPassThroughListener = null
         _isScreenHeldState.value = false
         AutomationController.engine?.gameDetection?.updateScreenAwakeState(false, false)
         releaseWakeLockSafely()

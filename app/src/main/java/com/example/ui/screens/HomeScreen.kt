@@ -50,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -109,7 +110,8 @@ fun HomeScreen(
     activeAlarmTitle: String? = null,
     onStopAlarm: () -> Unit = {},
     onSnoozeAlarm: () -> Unit = {},
-    onEndSessionAndClearData: () -> Unit = {}
+    onEndSessionAndClearData: () -> Unit = {},
+    onToggleAutoBet: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -354,6 +356,63 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
+        }
+
+        // Master Live Automation Toggle Card
+        Card(
+            modifier = Modifier.fillMaxWidth().testTag("master_automation_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (config.isAutoBetEnabled)
+                    ActionStartEmerald.copy(alpha = 0.1f)
+                else
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (config.isAutoBetEnabled) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = null,
+                            tint = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (config.isAutoBetEnabled) "Live Automation: ACTIVE (Betting & Editing)" else "Live Automation: PAUSED (Recording Only)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (config.isAutoBetEnabled)
+                            "App automatically detects game states, edits stake fields, and executes bets/cash-outs."
+                        else
+                            "App records multipliers and crash history normally without editing fields or placing bets.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = config.isAutoBetEnabled,
+                    onCheckedChange = { onToggleAutoBet(it) },
+                    modifier = Modifier.testTag("master_automation_switch")
+                )
             }
         }
 

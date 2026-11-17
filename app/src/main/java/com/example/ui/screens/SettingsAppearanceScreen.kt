@@ -159,6 +159,12 @@ fun SettingsAppearanceScreen(
     var bigThreshText by remember(incomingConfig.bigThreshold) {
         mutableStateOf(String.format(Locale.US, "%.2f", incomingConfig.bigThreshold))
     }
+    var baseStakeText by remember(incomingConfig.baseStake) {
+        mutableStateOf(String.format(Locale.US, "%.2f", incomingConfig.baseStake))
+    }
+    var targetMultText by remember(incomingConfig.targetMultiplier) {
+        mutableStateOf(String.format(Locale.US, "%.2f", incomingConfig.targetMultiplier))
+    }
 
     var startTimeText by remember(incomingConfig.scheduleStartHour, incomingConfig.scheduleStartMinute) {
         mutableStateOf(
@@ -264,6 +270,84 @@ fun SettingsAppearanceScreen(
 
         // Permissions Compliance Component
         PermissionsScreen(scrollable = false)
+
+        // Automated Stake & Target Multiplier Configuration Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_automated_stake_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Automation", tint = PrimaryCobalt)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "AUTOMATED BETTING & CASH-OUT",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = PrimaryCobalt
+                        )
+                    }
+                    Switch(
+                        checked = localConfig.isAutoBetEnabled,
+                        onCheckedChange = {
+                            applyConfigUpdate(localConfig.copy(isAutoBetEnabled = it))
+                        },
+                        modifier = Modifier.testTag("settings_auto_bet_switch")
+                    )
+                }
+
+                Text(
+                    text = "When active, the app automatically detects game states, edits stake fields, places bets, and cashes out at your target multiplier. Base stake can be set as low as 1.0.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = baseStakeText,
+                        onValueChange = {
+                            baseStakeText = it
+                            it.toDoubleOrNull()?.let { v ->
+                                if (v >= 1.0) applyConfigUpdate(localConfig.copy(baseStake = v))
+                            }
+                        },
+                        label = { Text("Initial Base Stake (min 1.0)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("settings_base_stake_input")
+                    )
+                    OutlinedTextField(
+                        value = targetMultText,
+                        onValueChange = {
+                            targetMultText = it
+                            it.toDoubleOrNull()?.let { v ->
+                                if (v >= 1.01) applyConfigUpdate(localConfig.copy(targetMultiplier = v))
+                            }
+                        },
+                        label = { Text("Target Multiplier (e.g. 2.00x)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("settings_target_multiplier_input")
+                    )
+                }
+            }
+        }
 
         // Crash Category Thresholds Card
         Card(

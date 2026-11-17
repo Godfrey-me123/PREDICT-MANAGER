@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import com.example.service.AlarmAudioController
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -103,6 +104,14 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: ScreenEarnerViewModel by viewModels()
 
+    private fun handleAlarmStopIntent(intent: Intent?): Boolean {
+        if (intent?.action == AlarmAudioController.ACTION_STOP_ALARM) {
+            AlarmAudioController.stopAlarm(this)
+            return true
+        }
+        return false
+    }
+
     private fun handleExitIntent(intent: Intent?): Boolean {
         if (intent?.action == ACTION_EXIT_APP) {
             runCatching {
@@ -118,12 +127,14 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (handleAlarmStopIntent(intent)) return
         if (handleExitIntent(intent)) return
         handleIncomingTabExtra(intent)
     }
 
     override fun onResume() {
         super.onResume()
+        if (handleAlarmStopIntent(intent)) return
         if (handleExitIntent(intent)) return
         viewModel.refreshOverlayRunningState()
     }
@@ -159,6 +170,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (handleAlarmStopIntent(intent)) return
         if (handleExitIntent(intent)) return
         enableEdgeToEdge()
         handleIncomingTabExtra(intent)
@@ -192,6 +204,8 @@ class MainActivity : ComponentActivity() {
                 val isOverlayRunning by viewModel.isOverlayServiceRunning.collectAsStateWithLifecycle()
                 val isPixelCaptureActive by viewModel.isPixelCaptureActive.collectAsStateWithLifecycle()
                 val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
+                val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsStateWithLifecycle()
+                val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsStateWithLifecycle()
 
                 var showMoreModulesSheet by remember { mutableStateOf(false) }
                 val snackbarHostState = remember { SnackbarHostState() }
@@ -293,7 +307,12 @@ class MainActivity : ComponentActivity() {
                                 onPauseMonitoring = { viewModel.pauseAutomation() },
                                 onNavigateToTab = { viewModel.selectTab(it) },
                                 monitoringStatus = monitoringStatus,
-                                onEndSessionAndClearData = { viewModel.endSessionAndClearSessionData() }
+                                isAlarmRinging = isAlarmRinging,
+                                activeAlarmTitle = activeAlarmTitle,
+                                onStopAlarm = { AlarmAudioController.stopAlarm(context) },
+                                onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
+                                onEndSessionAndClearData = { viewModel.endSessionAndClearSessionData() },
+                                onToggleAutoBet = { viewModel.toggleAutoBet(it) }
                             )
 
                             TAB_LIVE_MONITOR -> LiveMonitorScreen(
@@ -425,6 +444,9 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onEndSessionAndClearData = { viewModel.endSessionAndClearSessionData() },
+                                isAlarmRinging = isAlarmRinging,
+                                onStopAlarm = { AlarmAudioController.stopAlarm(context) },
+                                onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
                                 alarmProfiles = alarmProfiles,
                                 onSaveAlarmProfile = { viewModel.saveAlarmProfile(it) },
                                 isCpuAwakeHeld = isCpuAwakeHeld,

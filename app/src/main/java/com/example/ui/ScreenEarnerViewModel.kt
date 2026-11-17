@@ -462,6 +462,30 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
         applyStrategySelection(current.copy(gridRows = rows.coerceIn(4, 5), gridColumns = cols.coerceIn(7, 8)))
     }
 
+    fun updateBaseStake(newBaseStake: Double) {
+        if (!newBaseStake.isFinite() || newBaseStake < 1.0) {
+            _userMessage.value = "Base stake must be at least 1.0"
+            return
+        }
+        val current = strategyConfig.value ?: StrategyConfig()
+        saveStrategyConfig(current.copy(baseStake = newBaseStake))
+    }
+
+    fun updateTargetMultiplier(newMultiplier: Double) {
+        if (!newMultiplier.isFinite() || newMultiplier < 1.01) {
+            _userMessage.value = "Target multiplier must be at least 1.01x"
+            return
+        }
+        val current = strategyConfig.value ?: StrategyConfig()
+        saveStrategyConfig(current.copy(targetMultiplier = newMultiplier))
+    }
+
+    fun toggleAutoBet(enabled: Boolean) {
+        val current = strategyConfig.value ?: StrategyConfig()
+        saveStrategyConfig(current.copy(isAutoBetEnabled = enabled))
+        _userMessage.value = if (enabled) "Live automation enabled (Betting & Editing Active)" else "Live automation paused (Recording Only)"
+    }
+
     fun updateCategoryThresholds(low: Double, boundary: Double, big: Double) {
         if (!low.isFinite() || !boundary.isFinite() || !big.isFinite() || low < 1.01 || big <= low) {
             _userMessage.value = "Failed to save settings, please check input"

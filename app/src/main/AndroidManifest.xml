@@ -79,6 +79,12 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- Background receiver to stop ringing alarm without opening app/settings -->
+        <receiver
+            android:name=".service.AlarmStopReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 
 </manifest>

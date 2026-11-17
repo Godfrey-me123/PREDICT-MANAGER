@@ -160,7 +160,7 @@ fun NotificationCenterScreen(
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                             Button(
-                                onClick = { AlarmAudioController.stopAlarm() },
+                                onClick = { AlarmAudioController.stopAlarm(context) },
                                 colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
                                 modifier = Modifier.weight(1f).height(48.dp)
                             ) {
