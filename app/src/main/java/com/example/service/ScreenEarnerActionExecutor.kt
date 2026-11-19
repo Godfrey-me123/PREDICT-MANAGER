@@ -6,6 +6,7 @@ import android.graphics.Path
 import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -89,7 +90,7 @@ class ScreenEarnerActionExecutor(
         }
     }
 
-    /** Replace text in a named editable field and read it back before reporting success. */
+    /** Replace text in a named editable field (clearing existing text first) and read it back before reporting success. */
     suspend fun replaceFieldText(label: String, value: String): Result {
         val root = service.rootInActiveWindow
             ?: return Result(false, "No active accessibility window")
@@ -97,27 +98,7 @@ class ScreenEarnerActionExecutor(
             ?: return Result(false, "Editable field not found: $label")
         return try {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val args = Bundle().apply {
-                putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    value
-                )
-            }
-            val accepted = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-            runCatching { node.refresh() }
-            val readBack = runCatching { node.text?.toString() }.getOrNull()
-            val verified = accepted && readBack != null &&
-                normalize(readBack) == normalize(value)
-            if (verified) {
-                Result(true, "Field value verified", readBack)
-            } else {
-                Result(
-                    false,
-                    if (!accepted) "Android rejected text replacement"
-                    else "Text replacement was not verifiable; observed=${readBack ?: "unavailable"}",
-                    readBack
-                )
-            }
+            setNodeTextAndVerify(node, value)
         } finally {
             recycleTreeNode(node, root)
             runCatching { root.recycle() }
@@ -173,11 +154,44 @@ class ScreenEarnerActionExecutor(
         }
     }
 
+    fun isSoftKeyboardOpen(): Boolean {
+        return runCatching {
+            service.windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } ?: false
+        }.getOrDefault(false)
+    }
+
+    /** Dismisses the IME ONLY if AccessibilityWindowInfo confirms an active soft keyboard window. */
+    fun dismissKeyboardSafely(): Result {
+        if (!isSoftKeyboardOpen()) {
+            return Result(true, "No active soft keyboard window")
+        }
+        return pressBack()
+    }
+
+    fun isTargetButtonReady(expectBet: Boolean): Boolean {
+        val targets = service.getLatestUiTargets()
+        return if (expectBet) {
+            targets.gamePhase == "BETTING_OPEN" ||
+                targets.siteButtonState == com.example.data.model.SiteButtonState.IDLE_READY_TO_BET ||
+                targets.betButtonBounds != null
+        } else {
+            targets.siteButtonState == com.example.data.model.SiteButtonState.CASH_OUT_AVAILABLE ||
+                targets.cashOutButtonBounds != null
+        }
+    }
+
     private suspend fun setNodeTextAndVerify(
         node: AccessibilityNodeInfo,
         value: String
     ): Result {
         if (!node.isEditable) return Result(false, "Focused node is not editable")
+        val existing = runCatching { node.text?.toString().orEmpty() }.getOrDefault("")
+        if (existing.isNotEmpty() && value.isNotEmpty()) {
+            val clearArgs = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            }
+            runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs) }
+        }
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -189,7 +203,7 @@ class ScreenEarnerActionExecutor(
         val readBack = runCatching { node.text?.toString() }.getOrNull()
         val verified = accepted && readBack != null && normalize(readBack) == normalize(value)
         return if (verified) Result(true, "Text verified", readBack)
-        else Result(false, "Text action not verified", readBack)
+        else Result(false, "Text action not verified (observed=${readBack ?: "unavailable"})", readBack)
     }
 
     suspend fun pressEnter(): Result {

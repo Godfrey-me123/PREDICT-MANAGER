@@ -3,6 +3,8 @@ package com.example.ui.screens
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -135,14 +137,15 @@ fun StrategyScreen(
         if (selectedGroupFilter == null) sorted else sorted.filter { it.effectiveGroup() == selectedGroupFilter }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = "STRATEGY MANAGER",
@@ -499,6 +502,7 @@ fun StrategyScreen(
             }
         )
     }
+    }
 }
 
 @Composable
@@ -786,8 +790,10 @@ private fun CustomStrategyBuilderDialog(
     // Review state
     var reviewCandidate by remember { mutableStateOf<CustomPatternStrategy?>(null) }
 
-    BackHandler {
-        if (reviewCandidate != null) reviewCandidate = null else onDismiss()
+    if (LocalOnBackPressedDispatcherOwner.current != null) {
+        BackHandler {
+            if (reviewCandidate != null) reviewCandidate = null else onDismiss()
+        }
     }
 
     val selectableColors = remember {
@@ -939,7 +945,8 @@ private fun CustomStrategyBuilderDialog(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    val hasActivityRegistry = LocalActivityResultRegistryOwner.current != null
+    val builderCardContent: @Composable () -> Unit = {
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -1503,6 +1510,21 @@ private fun CustomStrategyBuilderDialog(
                     }
                 }
             }
+        }
+    }
+    if (hasActivityRegistry) {
+        Dialog(onDismissRequest = onDismiss) {
+            builderCardContent()
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .padding(8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            builderCardContent()
         }
     }
 }

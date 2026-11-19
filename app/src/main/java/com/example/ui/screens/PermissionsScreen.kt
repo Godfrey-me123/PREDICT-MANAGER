@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -86,11 +87,14 @@ fun PermissionsScreen(scrollable: Boolean = true) {
         )
     }
 
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        isNotificationGranted = granted
-    }
+    val hasActivityRegistry = LocalActivityResultRegistryOwner.current != null
+    val notificationPermissionLauncher = if (hasActivityRegistry) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            isNotificationGranted = granted
+        }
+    } else null
 
     val containerModifier = if (scrollable) {
         Modifier
@@ -182,7 +186,7 @@ fun PermissionsScreen(scrollable: Boolean = true) {
             buttonTestTag = "request_notification_permission_btn",
             cardTestTag = "notification_permission_card",
             onClick = {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !isNotificationGranted) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !isNotificationGranted && notificationPermissionLauncher != null) {
                     notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {

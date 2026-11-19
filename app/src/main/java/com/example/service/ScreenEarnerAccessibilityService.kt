@@ -2,6 +2,7 @@ package com.example.service
 
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import com.example.data.engine.GameAdapterRegistry
 import com.example.data.engine.GameDetection
 import com.example.data.model.MonitoringStatus
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,28 +94,53 @@ class ScreenEarnerAccessibilityService : AccessibilityController() {
             super.onAccessibilityEvent(event)
 
             val targets = detectedTargets.value
-            val resolvedSite = GameDetection.resolvePlatformFromSignals(
-                packageName = packageName,
-                detectedUrl = targets.detectedUrl,
-                pageHints = targets.pageTextHints
-            )
-
-            val gameDetected = resolvedSite != null ||
-                packageName.contains("chrome", ignoreCase = true) ||
-                packageName.contains("browser", ignoreCase = true) ||
-                targets.detectedMultiplier != null ||
+            val hasMultiplierSignals = targets.detectedMultiplier != null ||
                 targets.ribbonMultipliers.isNotEmpty() ||
                 targets.isBetBtnDetected ||
                 targets.isCashOutBtnDetected ||
-                targets.isCancelBtnDetected ||
-                targets.detectedBalance != null
+                targets.isCancelBtnDetected
 
-            val detectedPlatform = resolvedSite ?: when {
-                packageName.contains("chrome", ignoreCase = true) -> "Chrome Aviator Web"
-                targets.detectedUrl?.contains("betpawa", ignoreCase = true) == true -> "BetPawa Aviator"
-                targets.detectedUrl?.contains("sportybet", ignoreCase = true) == true -> "SportyBet Aviator"
-                else -> "Detected Game"
+            val resolvedAdapter = GameAdapterRegistry.resolveAdapter(
+                packageName = packageName,
+                url = targets.detectedUrl,
+                pageHints = targets.pageTextHints,
+                rawTexts = targets.visibleRawTitles,
+                hasMultiplierSignals = hasMultiplierSignals
+            )
+            val platformName = GameAdapterRegistry.resolvePlatformDisplay(
+                packageName = packageName,
+                url = targets.detectedUrl,
+                pageHints = targets.pageTextHints
+            )
+
+            val resolvedGameTitle = resolvedAdapter?.displayedGameName
+                ?: GameDetection.resolvePlatformFromSignals(
+                    packageName = packageName,
+                    detectedUrl = targets.detectedUrl,
+                    pageHints = targets.pageTextHints
+                )
+                ?: platformName.takeIf { it != "Unknown" }
+                ?: "Detected Game"
+
+            val resolvedGameId = resolvedAdapter?.gameId?.takeIf { it.isNotBlank() && it != "unknown" }
+                ?: resolvedGameTitle.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').ifBlank { "unknown" }
+
+            var confidence = 0f
+            if (resolvedAdapter != null && resolvedAdapter.gameId != "unknown") confidence += 0.45f
+            else if (resolvedAdapter != null) confidence += 0.25f
+            if (!targets.detectedUrl.isNullOrBlank() || platformName != "Unknown") confidence += 0.20f
+            if (targets.detectedMultiplier != null) confidence += 0.15f
+            if (targets.ribbonMultipliers.isNotEmpty()) confidence += 0.10f
+            if (targets.isBetBtnDetected || targets.isCashOutBtnDetected || targets.isCancelBtnDetected || targets.isStakeInputDetected) {
+                confidence += 0.15f
             }
+            val boundedConfidence = confidence.coerceIn(0f, 1f)
+
+            val gameDetected = resolvedAdapter != null ||
+                hasMultiplierSignals ||
+                targets.detectedBalance != null ||
+                packageName.contains("chrome", ignoreCase = true) ||
+                packageName.contains("browser", ignoreCase = true)
 
             val missing = buildList {
                 if (!targets.isBetBtnDetected && !targets.isCancelBtnDetected &&
@@ -126,26 +152,24 @@ class ScreenEarnerAccessibilityService : AccessibilityController() {
                 ) add("Stake Input / 2x / + Controls")
             }
 
+            val allSupportedPlatforms = (resolvedAdapter?.supportedPlatforms
+                ?: GameAdapterRegistry.allAdapters().flatMap { it.supportedPlatforms }).distinct()
+
             _detectionState.value = GameDetectionState(
                 isGameDetected = gameDetected,
-                platformName = detectedPlatform,
-                displayedGameName = detectedPlatform,
-                gameId = detectedPlatform.lowercase().replace("\\s+".toRegex(), "_"),
+                platformName = platformName,
+                displayedGameName = resolvedGameTitle,
+                gameId = resolvedGameId,
                 roundId = targets.detectedCurrentRoundId,
                 detectedRoundId = targets.detectedCurrentRoundId,
-                originalDetectedTitle = detectedPlatform,
-                supportedPlatforms = listOf("BetPawa", "SportyBet", "Chrome"),
-                isReady = gameDetected && (
-                    targets.isBetBtnDetected ||
-                        targets.isCancelBtnDetected ||
-                        targets.isCashOutBtnDetected ||
-                        targets.detectedMultiplier != null ||
-                        targets.ribbonMultipliers.isNotEmpty()
-                    ),
+                originalDetectedTitle = resolvedGameTitle,
+                supportedPlatforms = allSupportedPlatforms,
+                isReady = gameDetected && hasMultiplierSignals,
                 gamePhase = targets.gamePhase,
                 missingElements = missing,
                 detectedMultiplier = targets.detectedMultiplier,
                 foregroundPackage = packageName,
+                detectionConfidence = boundedConfidence,
                 gameWindowAccessible = true,
                 uiTargets = targets,
                 updatedAtMs = System.currentTimeMillis()

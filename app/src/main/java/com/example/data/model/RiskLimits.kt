@@ -15,5 +15,8 @@ data class RiskLimits(
     val minBalanceThreshold: Double = 50.0,
     val emergencyStop: Boolean = false,
     val stopOnProfitEnabled: Boolean = true,
-    val stopOnLossEnabled: Boolean = true
+    val stopOnLossEnabled: Boolean = true,
+    val maxSequenceExposure: Double = 500.0,
+    val maxDailyLoss: Double = 500.0,
+    val safetyReserveAmount: Double = 0.0
 )

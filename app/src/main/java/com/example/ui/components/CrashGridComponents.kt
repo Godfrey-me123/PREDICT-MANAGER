@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -196,6 +197,75 @@ fun LiveCrashHeaderCard(
                     fontWeight = FontWeight.Medium,
                     color = Color(0xFFB45309)
                 )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+            val balanceStatus = gameState.balanceStatus
+            val balanceAmount = gameState.detectedBalance
+            val balanceCurrency = gameState.detectedCurrency ?: "KES"
+            val balanceFreshnessSec = if (gameState.balanceLastUpdatedMs > 0L) {
+                ((nowMs - gameState.balanceLastUpdatedMs) / 1000L).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            val balanceDisplayStr = when (balanceStatus) {
+                com.example.data.model.BalanceDetectionStatus.VERIFIED, com.example.data.model.BalanceDetectionStatus.DETECTED -> {
+                    val amt = balanceAmount ?: 0.0
+                    "${com.example.data.engine.CurrencyManager.formatAmount(amt)} $balanceCurrency [${balanceStatus.name}]"
+                }
+                com.example.data.model.BalanceDetectionStatus.SCANNING -> "BALANCE: SCANNING..."
+                com.example.data.model.BalanceDetectionStatus.STALE -> "BALANCE: STALE (${balanceFreshnessSec}s ago)"
+                com.example.data.model.BalanceDetectionStatus.UNAVAILABLE -> "BALANCE: UNAVAILABLE${gameState.balanceFailureReason?.let { " ($it)" } ?: ""}"
+            }
+            val balanceColor = when (balanceStatus) {
+                com.example.data.model.BalanceDetectionStatus.VERIFIED -> Color(0xFF047857)
+                com.example.data.model.BalanceDetectionStatus.DETECTED -> PrimaryCobalt
+                com.example.data.model.BalanceDetectionStatus.SCANNING -> Color(0xFFB45309)
+                com.example.data.model.BalanceDetectionStatus.STALE, com.example.data.model.BalanceDetectionStatus.UNAVAILABLE -> ActionStopRed
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(balanceColor, CircleShape)
+                    )
+                    Text(
+                        text = balanceDisplayStr,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = balanceColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("header_balance_display")
+                    )
+                }
+                if (balanceStatus != com.example.data.model.BalanceDetectionStatus.VERIFIED && balanceStatus != com.example.data.model.BalanceDetectionStatus.DETECTED) {
+                    androidx.compose.material3.TextButton(
+                        onClick = {
+                            com.example.service.AutomationController.engine?.gameDetection?.retryBalanceDetection(nowMs)
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .testTag("balance_retry_btn")
+                    ) {
+                        Text("RETRY", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = PrimaryCobalt)
+                    }
+                }
             }
         }
     }

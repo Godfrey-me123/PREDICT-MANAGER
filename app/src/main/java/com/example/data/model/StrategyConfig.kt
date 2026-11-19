@@ -149,7 +149,21 @@ data class StrategyConfig(
     val pixelColorCaptureEnabled: Boolean = false,
     val ruleConfigsJson: String = serializeRuleConfigs(defaultRuleConfigs()),
     val maxStrategyBetAttempts: Int = 2,
-    val isMartingaleEnabled: Boolean = false
+    val isMartingaleEnabled: Boolean = false,
+    // Centralized Monitoring & Game Recognition settings
+    val minDetectionConfidence: Float = 0.5f,
+    val historyCollectionEnabled: Boolean = true,
+    val autoGameRecognitionEnabled: Boolean = true,
+    val preferredGameId: String = "ALL",
+    // Centralized Automation & Verified Execution settings
+    val automationMasterEnabled: Boolean = true,
+    val minFlightTimeBeforeCashOutMs: Long = 1200L,
+    val maxBetRetries: Int = 2,
+    val retryDelayMs: Long = 350L,
+    val bettingWindowExpiryMs: Long = 6000L,
+    val dismissKeyboardBeforeBet: Boolean = true,
+    val verifyStakeReadBack: Boolean = true,
+    val verifyButtonStateBeforeAction: Boolean = true
 ) {
     fun getRuleConfigs(): List<StrategyRuleConfig> = deserializeRuleConfigs(ruleConfigsJson)
 

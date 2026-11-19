@@ -41,7 +41,7 @@ import com.example.data.model.StrategyConfig
         AlarmProfileEntity::class,
         MonitoringSessionEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 @TypeConverters(ScreenEarnerTypeConverters::class)
@@ -174,6 +174,30 @@ abstract class ScreenEarnerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "strategy_configs", "minDetectionConfidence", "REAL NOT NULL DEFAULT 0.5")
+                addColumnIfMissing(db, "strategy_configs", "historyCollectionEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "strategy_configs", "autoGameRecognitionEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "strategy_configs", "preferredGameId", "TEXT NOT NULL DEFAULT 'ALL'")
+                addColumnIfMissing(db, "strategy_configs", "automationMasterEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "strategy_configs", "minFlightTimeBeforeCashOutMs", "INTEGER NOT NULL DEFAULT 1200")
+                addColumnIfMissing(db, "strategy_configs", "maxBetRetries", "INTEGER NOT NULL DEFAULT 2")
+                addColumnIfMissing(db, "strategy_configs", "retryDelayMs", "INTEGER NOT NULL DEFAULT 350")
+                addColumnIfMissing(db, "strategy_configs", "bettingWindowExpiryMs", "INTEGER NOT NULL DEFAULT 6000")
+                addColumnIfMissing(db, "strategy_configs", "dismissKeyboardBeforeBet", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "strategy_configs", "verifyStakeReadBack", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "strategy_configs", "verifyButtonStateBeforeAction", "INTEGER NOT NULL DEFAULT 1")
+
+                addColumnIfMissing(db, "risk_limits", "maxSequenceExposure", "REAL NOT NULL DEFAULT 500.0")
+                addColumnIfMissing(db, "risk_limits", "maxDailyLoss", "REAL NOT NULL DEFAULT 500.0")
+                addColumnIfMissing(db, "risk_limits", "safetyReserveAmount", "REAL NOT NULL DEFAULT 0.0")
+
+                addColumnIfMissing(db, "notification_settings", "executionAlertsEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "notification_settings", "failureAlertsEnabled", "INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): ScreenEarnerDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -181,7 +205,7 @@ abstract class ScreenEarnerDatabase : RoomDatabase() {
                     ScreenEarnerDatabase::class.java,
                     "screen_earner_db"
                 )
-                    .addMigrations(MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                    .addMigrations(MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                     .fallbackToDestructiveMigration(true)
                     .build()
 

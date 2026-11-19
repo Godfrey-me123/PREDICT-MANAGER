@@ -525,7 +525,9 @@ data class NotificationSettings(
     val quietEndMinute: Int = 0,
     val soundSourceType: String = "SYSTEM", // "SYSTEM" or "LOCAL_AUDIO"
     val deliveryMode: String = "ALARM",     // "ALARM" or "NORMAL"
-    val channelConfigVersion: Int = 1
+    val channelConfigVersion: Int = 1,
+    val executionAlertsEnabled: Boolean = true,
+    val failureAlertsEnabled: Boolean = true
 )
 
 enum class StrategyNotificationType(val displayLabel: String) {

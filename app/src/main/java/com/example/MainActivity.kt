@@ -30,9 +30,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
@@ -63,16 +65,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.engine.AutomationState
+import com.example.data.model.MonitoringStatus
 import com.example.data.model.ShortcutType
 import com.example.service.FloatingHandsOverlayManager
+import com.example.service.SessionStateManager
 import com.example.ui.ScreenEarnerViewModel
 import com.example.ui.components.AutoPredictorTopBar
+import com.example.ui.navigation.AppRoute
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.HourlyAnalysisScreen
 import com.example.ui.screens.LiveMonitorScreen
 import com.example.ui.screens.LogsAnalyticsScreen
 import com.example.ui.screens.NotificationCenterScreen
 import com.example.ui.screens.PatternRecognitionScreen
+import com.example.ui.screens.RiskManagerScreen
 import com.example.ui.screens.SettingsAppearanceScreen
 import com.example.ui.screens.StrategyScreen
 import com.example.ui.theme.AutoPredictorTheme
@@ -96,11 +102,12 @@ class MainActivity : ComponentActivity() {
         const val TAB_HOURLY_ANALYSIS = 5
         const val TAB_NOTIFICATIONS = 6
         const val TAB_SETTINGS = 7
+        const val TAB_RISK_MANAGER = 8
 
         // Compatibility aliases for deep links & existing navigation references
         const val TAB_OVERLAY = TAB_LIVE_MONITOR
         const val TAB_LOGS = TAB_CRASH_HISTORY
-        const val TAB_RISK = TAB_STRATEGY
+        const val TAB_RISK = TAB_RISK_MANAGER
         const val TAB_PROFILES = TAB_NOTIFICATIONS
     }
 
@@ -154,7 +161,7 @@ class MainActivity : ComponentActivity() {
             }
             if (intent.hasExtra(EXTRA_OPEN_TAB)) {
                 val targetTab = intent.getIntExtra(EXTRA_OPEN_TAB, TAB_HOME)
-                viewModel.selectTab(targetTab.coerceIn(TAB_HOME, TAB_SETTINGS))
+                viewModel.selectTab(targetTab.coerceIn(TAB_HOME, TAB_RISK_MANAGER))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed handling incoming tab extra", e)
@@ -195,6 +202,9 @@ class MainActivity : ComponentActivity() {
                 val gameState by viewModel.gameState.collectAsStateWithLifecycle()
                 val automationState by viewModel.automationState.collectAsStateWithLifecycle()
                 val monitoringStatus by viewModel.monitoringStatus.collectAsStateWithLifecycle()
+                val riskLimits by viewModel.riskLimits.collectAsStateWithLifecycle()
+                val lastRiskViolation by viewModel.automationEngine.lastRiskViolation.collectAsStateWithLifecycle()
+                val queuedOpportunitiesCount by viewModel.automationEngine.queuedOpportunityCount.collectAsStateWithLifecycle()
                 val isStandbyOutsideSchedule by viewModel.isStandbyOutsideSchedule.collectAsStateWithLifecycle()
                 val isCpuAwakeHeld by viewModel.isCpuAwakeHeld.collectAsStateWithLifecycle()
                 val selectedGameId by viewModel.selectedGameId.collectAsStateWithLifecycle()
@@ -208,6 +218,7 @@ class MainActivity : ComponentActivity() {
                 val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
                 val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsStateWithLifecycle()
                 val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsStateWithLifecycle()
+                val sessionStateManager = remember(context) { SessionStateManager(context.applicationContext) }
 
                 val shortcuts by viewModel.shortcuts.collectAsStateWithLifecycle()
                 val betShortcut = shortcuts.firstOrNull { it.type == ShortcutType.BET && it.isCalibrated && it.targetX > 0f }
@@ -249,7 +260,10 @@ class MainActivity : ComponentActivity() {
                     viewModel.closeEditorScreen()
                 }
 
-                val isMonitoringActive = automationState == AutomationState.RUNNING
+                val isMonitoringActive = monitoringStatus == MonitoringStatus.MONITORING ||
+                    monitoringStatus == MonitoringStatus.WAITING_FOR_GAME ||
+                    monitoringStatus == MonitoringStatus.GAME_NOT_ACCESSIBLE ||
+                    monitoringStatus == MonitoringStatus.GAME_SUSPENDED
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -263,6 +277,10 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     viewModel.startMonitoring()
                                 }
+                            },
+                            onSwitchToOverlayMode = {
+                                viewModel.openInOverlayMode(context)
+                                moveTaskToBack(true)
                             }
                         )
                     },
@@ -350,6 +368,14 @@ class MainActivity : ComponentActivity() {
                                         cashOutShortcut,
                                         strategyConfig?.targetMultiplier ?: 2.00
                                     )
+                                },
+                                queuedOpportunitiesCount = queuedOpportunitiesCount,
+                                onStartAutomationAssistant = { viewModel.startAutomationAssistant() },
+                                onPauseAutomationAssistant = { viewModel.pauseAutomationAssistant() },
+                                onStopAutomationAssistant = { viewModel.stopAutomationAssistant() },
+                                onOpenOverlaySettings = {
+                                    viewModel.openInOverlayMode(context, AppRoute.SETTINGS)
+                                    moveTaskToBack(true)
                                 }
                             )
 
@@ -374,7 +400,26 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onStopPixelCapture = { viewModel.stopPixelColorCapture(context) },
-                                onEndSessionAndClear = { viewModel.endSessionAndClearSessionData() }
+                                onEndSessionAndClear = { viewModel.endSessionAndClearSessionData() },
+                                monitoringStatus = monitoringStatus,
+                                queuedOpportunitiesCount = queuedOpportunitiesCount,
+                                onStartAutomationAssistant = { viewModel.startAutomationAssistant() },
+                                onPauseAutomationAssistant = { viewModel.pauseAutomationAssistant() },
+                                onStopAutomationAssistant = { viewModel.stopAutomationAssistant() },
+                                onToggleBetHand = {
+                                    floatingHandsManager.showOrToggleHand(
+                                        ShortcutType.BET,
+                                        betShortcut,
+                                        strategyConfig?.targetMultiplier ?: 2.00
+                                    )
+                                },
+                                onToggleCashOutHand = {
+                                    floatingHandsManager.showOrToggleHand(
+                                        ShortcutType.CASH_OUT,
+                                        cashOutShortcut,
+                                        strategyConfig?.targetMultiplier ?: 2.00
+                                    )
+                                }
                             )
 
                             TAB_CRASH_HISTORY -> LogsAnalyticsScreen(
@@ -492,6 +537,21 @@ class MainActivity : ComponentActivity() {
                                 onClearHistoryByScope = { scope, gId -> viewModel.clearHistoryByScope(scope, gId) },
                                 selectedGameId = selectedGameId
                             )
+
+                            TAB_RISK_MANAGER -> RiskManagerScreen(
+                                currentLimits = riskLimits,
+                                lastViolation = lastRiskViolation,
+                                onSaveLimits = { updatedLimits ->
+                                    viewModel.saveRiskLimits(updatedLimits, ensureOverlayActive = false, context = context)
+                                },
+                                onTriggerEmergencyStop = {
+                                    viewModel.triggerEmergencyStop()
+                                },
+                                onClearEmergencyStop = {
+                                    viewModel.clearEmergencyStop()
+                                },
+                                currentDailyLoss = sessionStateManager.getDailyLoss()
+                            )
                         }
                     }
                 }
@@ -556,6 +616,29 @@ class MainActivity : ComponentActivity() {
                                 onClick = {
                                     showMoreModulesSheet = false
                                     viewModel.selectTab(TAB_SETTINGS)
+                                }
+                            )
+                            SheetModuleItem(
+                                title = "9. Risk Manager & Safety Locks",
+                                subtitle = "Daily loss cap, sequence exposure, reserve & emergency stop",
+                                icon = Icons.Default.Security,
+                                selected = selectedTab == TAB_RISK_MANAGER,
+                                testTag = "nav_risk_manager",
+                                onClick = {
+                                    showMoreModulesSheet = false
+                                    viewModel.selectTab(TAB_RISK_MANAGER)
+                                }
+                            )
+                            SheetModuleItem(
+                                title = "Switch to Floating Overlay Mode",
+                                subtitle = "Return to the monitored game with unified overlay navigation",
+                                icon = Icons.Default.Layers,
+                                selected = false,
+                                testTag = "sheet_switch_overlay_mode_btn",
+                                onClick = {
+                                    showMoreModulesSheet = false
+                                    viewModel.openInOverlayMode(context)
+                                    moveTaskToBack(true)
                                 }
                             )
                             Spacer(modifier = Modifier.height(16.dp))

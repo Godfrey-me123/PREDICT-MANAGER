@@ -1482,10 +1482,29 @@ open class AccessibilityController : AccessibilityService() {
 
     fun getLatestUiTargets(): DetectedUiTargets = _detectedTargets.value
 
+    fun isSoftKeyboardOpen(): Boolean {
+        return safeInteractiveWindows().any { win ->
+            try {
+                win.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
     /**
-     * Writes the new stake into an editable field via ACTION_SET_TEXT first, verifies the site
-     * accepted the exact value by immediately re-reading the field, and falls back to clipboard
-     * ACTION_PASTE + re-read verification if the WebView/React input ignored ACTION_SET_TEXT.
+     * Dismisses the soft keyboard safely. Only sends GLOBAL_ACTION_BACK when an Android IME
+     * window is actually active so it never navigates back out of the browser or overlay.
+     */
+    fun dismissKeyboardIfOpen(): Boolean {
+        if (!isSoftKeyboardOpen()) return false
+        return runCatching { performGlobalAction(GLOBAL_ACTION_BACK) }.getOrDefault(false)
+    }
+
+    /**
+     * Writes the new stake into an editable field via ACTION_SET_TEXT first (clearing existing text),
+     * verifies the site accepted the exact value by immediately re-reading the field, and falls back
+     * to clipboard ACTION_PASTE + re-read verification if the WebView/React input ignored ACTION_SET_TEXT.
      * Never reports success unless read-back explicitly verifies the expected stake.
      */
     protected open fun writeAndVerifyStakeNode(
@@ -1502,13 +1521,17 @@ open class AccessibilityController : AccessibilityService() {
             return runCatching { findEditableStakeNode(rootNode, rootNode)?.text?.toString() }.getOrNull()
         }
 
-        // Attempt 1: Focus, select any existing text, and replace via ACTION_SET_TEXT
+        // Attempt 1: Focus, explicitly clear existing value if present, and set new stake via ACTION_SET_TEXT
         runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
         val existingLen = runCatching { stakeNode.text?.length ?: 0 }.getOrDefault(0)
         if (existingLen > 0) {
+            val clearArgs = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            }
+            runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs) }
             val selArgs = Bundle().apply {
                 putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existingLen)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, runCatching { stakeNode.text?.length ?: 0 }.getOrDefault(0))
             }
             runCatching { stakeNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs) }
         }
@@ -1648,11 +1671,12 @@ open class AccessibilityController : AccessibilityService() {
         val desc = runCatching { node.contentDescription?.toString()?.trim()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
         val viewId = runCatching { node.viewIdResourceName?.trim()?.lowercase(Locale.US).orEmpty() }.getOrDefault("")
         val isClickable = runCatching { node.isClickable }.getOrDefault(false)
+        val isEnabled = runCatching { node.isEnabled }.getOrDefault(true)
         val combined = "$text $desc $viewId"
         val isAddressBar = viewId.contains("url_bar") || viewId.contains("omnibox") || viewId.contains("location_bar")
         val isExcluded = isAddressBar || excludedTerms.any { term -> combined.contains(term) }
 
-        if (isClickable && !isExcluded && keywords.any { text == it || desc == it || text.contains(it) || desc.contains(it) }) {
+        if (isClickable && isEnabled && !isExcluded && keywords.any { text == it || desc == it || text.contains(it) || desc.contains(it) }) {
             return node
         }
 

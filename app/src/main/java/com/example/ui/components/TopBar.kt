@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Radar
@@ -28,7 +29,8 @@ import androidx.compose.ui.unit.dp
 fun AutoPredictorTopBar(
     isMonitoringActive: Boolean,
     isOutsideSchedule: Boolean = false,
-    onToggleMonitoring: () -> Unit
+    onToggleMonitoring: () -> Unit,
+    onSwitchToOverlayMode: (() -> Unit)? = null
 ) {
     TopAppBar(
         title = {
@@ -51,6 +53,23 @@ fun AutoPredictorTopBar(
             }
         },
         actions = {
+            if (onSwitchToOverlayMode != null) {
+                FilledTonalButton(
+                    onClick = onSwitchToOverlayMode,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .testTag("topbar_overlay_mode_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Layers,
+                        contentDescription = "Overlay Mode",
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(16.dp)
+                    )
+                    Text("Overlay", fontWeight = FontWeight.SemiBold)
+                }
+            }
             val label = when {
                 isOutsideSchedule -> "Standby"
                 isMonitoringActive -> "Pause Monitor"

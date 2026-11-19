@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -93,11 +94,14 @@ fun NotificationCenterScreen(
     val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsState()
     val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsState()
 
-    val permLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasNotifPermission = granted
-    }
+    val hasActivityRegistry = LocalActivityResultRegistryOwner.current != null
+    val permLauncher = if (hasActivityRegistry) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            hasNotifPermission = granted
+        }
+    } else null
 
     val filteredHistory = remember(notificationHistory, selectedChannelFilter) {
         if (selectedChannelFilter == "ALL") {
@@ -211,8 +215,17 @@ fun NotificationCenterScreen(
                         )
                         Button(
                             onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && permLauncher != null) {
                                     permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                            }
+                                        )
+                                    }
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
@@ -258,6 +271,36 @@ fun NotificationCenterScreen(
                         Switch(
                             checked = settings.soundEnabled,
                             onCheckedChange = { onUpdateSettings(settings.copy(soundEnabled = it, vibrationEnabled = it)) }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Bet & Cash-Out Execution Alerts", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Notify on automated stake entry, bet placement & cash-out", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = settings.executionAlertsEnabled,
+                            onCheckedChange = { onUpdateSettings(settings.copy(executionAlertsEnabled = it)) },
+                            modifier = Modifier.testTag("notif_execution_alerts_switch")
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Failure & History Unavailable Alerts", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Alert if Accessibility disconnects or ribbon history stops updating", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = settings.failureAlertsEnabled,
+                            onCheckedChange = { onUpdateSettings(settings.copy(failureAlertsEnabled = it)) },
+                            modifier = Modifier.testTag("notif_failure_alerts_switch")
                         )
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,9 +37,11 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -116,10 +119,16 @@ fun HomeScreen(
     betShortcut: FloatingShortcut? = null,
     cashOutShortcut: FloatingShortcut? = null,
     onToggleBetHand: () -> Unit = {},
-    onToggleCashOutHand: () -> Unit = {}
+    onToggleCashOutHand: () -> Unit = {},
+    queuedOpportunitiesCount: Int = 0,
+    onStartAutomationAssistant: (() -> Unit)? = null,
+    onPauseAutomationAssistant: (() -> Unit)? = null,
+    onStopAutomationAssistant: (() -> Unit)? = null,
+    onOpenOverlaySettings: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    val hasActivityRegistry = LocalActivityResultRegistryOwner.current != null
 
     val isDrawOverAppsGranted = Settings.canDrawOverlays(context)
     val a11yStatus by ScreenEarnerAccessibilityService.connectionStatus.collectAsState()
@@ -131,14 +140,15 @@ fun HomeScreen(
         monitoringStatus == MonitoringStatus.GAME_SUSPENDED
     var showConfirmClearDialog by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(scrollState)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         // Brand Header
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -373,60 +383,123 @@ fun HomeScreen(
             onToggleCashOutHand = onToggleCashOutHand
         )
 
-        // Master Live Automation Toggle Card
+        // Master Live Automation Assistant Card (Independent from Monitoring Engine)
         Card(
             modifier = Modifier.fillMaxWidth().testTag("master_automation_card"),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (config.isAutoBetEnabled)
+                containerColor = if (config.isAutoBetEnabled && automationState == AutomationState.RUNNING)
                     ActionStartEmerald.copy(alpha = 0.1f)
                 else
                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             ),
             border = BorderStroke(
                 1.dp,
-                if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.outlineVariant
+                if (config.isAutoBetEnabled && automationState == AutomationState.RUNNING) ActionStartEmerald else MaterialTheme.colorScheme.outlineVariant
             )
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (config.isAutoBetEnabled) Icons.Default.PlayArrow else Icons.Default.Pause,
-                            contentDescription = null,
-                            tint = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (config.isAutoBetEnabled) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = null,
+                                tint = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (config.isAutoBetEnabled) {
+                                    "Automation Assistant: ${automationState.name} (Queue: $queuedOpportunitiesCount)"
+                                } else {
+                                    "Live Automation: PAUSED (Recording Only)"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (config.isAutoBetEnabled) "Live Automation: ACTIVE (Betting & Editing)" else "Live Automation: PAUSED (Recording Only)",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            color = if (config.isAutoBetEnabled) ActionStartEmerald else MaterialTheme.colorScheme.onSurface
+                            text = if (config.isAutoBetEnabled)
+                                "Consumes confirmed strategy triggers for stake entry & Cash Out without interrupting monitoring."
+                            else
+                                "App monitors multipliers, crash history, and alarms normally without editing fields or placing bets.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (config.isAutoBetEnabled)
-                            "App automatically detects game states, edits stake fields, and executes bets/cash-outs."
-                        else
-                            "App records multipliers and crash history normally without editing fields or placing bets.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(
+                        checked = config.isAutoBetEnabled,
+                        onCheckedChange = { onToggleAutoBet(it) },
+                        modifier = Modifier.testTag("master_automation_switch")
                     )
                 }
-                Spacer(modifier = Modifier.width(12.dp))
-                Switch(
-                    checked = config.isAutoBetEnabled,
-                    onCheckedChange = { onToggleAutoBet(it) },
-                    modifier = Modifier.testTag("master_automation_switch")
-                )
+
+                if (onStartAutomationAssistant != null || onPauseAutomationAssistant != null || onStopAutomationAssistant != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (onStartAutomationAssistant != null) {
+                            Button(
+                                onClick = onStartAutomationAssistant,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ActionStartEmerald,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("home_start_automation_btn")
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Start Automation", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("AUTO ON", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        if (onPauseAutomationAssistant != null) {
+                            OutlinedButton(
+                                onClick = onPauseAutomationAssistant,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("home_pause_automation_btn")
+                            ) {
+                                Icon(Icons.Default.Pause, contentDescription = "Pause Automation", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PAUSE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        if (onStopAutomationAssistant != null) {
+                            OutlinedButton(
+                                onClick = onStopAutomationAssistant,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("home_stop_automation_btn")
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = "Stop Automation", tint = ActionStopRed, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("STOP", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ActionStopRed)
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -636,41 +709,118 @@ fun HomeScreen(
                     }
                 }
             }
-            ModuleTileButton(
-                title = "Settings, Thresholds, Awake & Operating Hours",
-                icon = Icons.Default.Settings,
-                onClick = { onNavigateToTab(MainActivity.TAB_SETTINGS) },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-    }
-
-    if (showConfirmClearDialog) {
-        AlertDialog(
-            onDismissRequest = { showConfirmClearDialog = false },
-            title = { Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold) },
-            text = {
-                Text("This stops monitoring, resets session crashes to 0, clears the current round ID, stops any active alarm, and removes records created during this session.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showConfirmClearDialog = false
-                        onEndSessionAndClearData()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
-                    modifier = Modifier.testTag("home_confirm_end_session_btn")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ModuleTileButton(
+                    title = "Risk Manager",
+                    icon = Icons.Default.Security,
+                    onClick = { onNavigateToTab(MainActivity.TAB_RISK_MANAGER) },
+                    modifier = Modifier.weight(1f)
+                )
+                ModuleTileButton(
+                    title = "Settings & Awake",
+                    icon = Icons.Default.Settings,
+                    onClick = { onNavigateToTab(MainActivity.TAB_SETTINGS) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (onOpenOverlaySettings != null) {
+                OutlinedButton(
+                    onClick = onOpenOverlaySettings,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("home_open_overlay_mode_btn")
                 ) {
-                    Text("END & CLEAR", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirmClearDialog = false }) {
-                    Text("CANCEL")
+                    Icon(Icons.Default.Layers, contentDescription = "Open Floating Overlay", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("OPEN OVERLAY CONTROLS (KEEP GAME ACTIVE)", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                 }
             }
-        )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        if (showConfirmClearDialog) {
+            if (hasActivityRegistry) {
+                AlertDialog(
+                    onDismissRequest = { showConfirmClearDialog = false },
+                    title = { Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text("This stops monitoring, resets session crashes to 0, clears the current round ID, stops any active alarm, and removes records created during this session.")
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showConfirmClearDialog = false
+                                onEndSessionAndClearData()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
+                            modifier = Modifier.testTag("home_confirm_end_session_btn")
+                        ) {
+                            Text("END & CLEAR", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showConfirmClearDialog = false }) {
+                            Text("CANCEL")
+                        }
+                    }
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(
+                                "This stops monitoring, resets session crashes to 0, clears the current round ID, stops any active alarm, and removes records created during this session.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                TextButton(
+                                    onClick = { showConfirmClearDialog = false },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("CANCEL")
+                                }
+                                Button(
+                                    onClick = {
+                                        showConfirmClearDialog = false
+                                        onEndSessionAndClearData()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("home_confirm_end_session_btn")
+                                ) {
+                                    Text("END & CLEAR", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

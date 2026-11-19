@@ -739,13 +739,16 @@ class StrategyNotificationManager(
             StrategyNotificationType.STRATEGY_APPROACHING -> settings.approachingEnabled
             StrategyNotificationType.STRATEGY_REACHED -> settings.reachedEnabled
             StrategyNotificationType.STRATEGY_INVALIDATED -> settings.invalidatedEnabled
-            StrategyNotificationType.HISTORY_UNAVAILABLE -> settings.historyUnavailableEnabled
-            StrategyNotificationType.MONITORING_ERROR -> settings.monitoringErrorsEnabled || settings.historyUnavailableEnabled
+            StrategyNotificationType.HISTORY_UNAVAILABLE ->
+                settings.historyUnavailableEnabled && settings.failureAlertsEnabled
+            StrategyNotificationType.MONITORING_ERROR ->
+                (settings.monitoringErrorsEnabled || settings.historyUnavailableEnabled) && settings.failureAlertsEnabled
             StrategyNotificationType.STRATEGY_PAUSED -> settings.pausedEnabled
             StrategyNotificationType.HOURLY_SUMMARY,
             StrategyNotificationType.NEW_HOUR_STARTED -> settings.hourlySummaryEnabled
             StrategyNotificationType.GAME_DETECTED -> settings.gameDetectionEnabled
-            StrategyNotificationType.AUTOMATION_ACTION -> settings.standardAlertEnabled
+            StrategyNotificationType.AUTOMATION_ACTION ->
+                settings.standardAlertEnabled && settings.executionAlertsEnabled
         }
         if (!typeEnabled) {
             return NotificationDeliveryStatus.SUPPRESSED_TYPE_OFF

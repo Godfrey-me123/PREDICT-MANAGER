@@ -11,11 +11,14 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -45,6 +48,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
@@ -165,6 +169,21 @@ fun SettingsAppearanceScreen(
     var targetMultText by remember(incomingConfig.targetMultiplier) {
         mutableStateOf(String.format(Locale.US, "%.2f", incomingConfig.targetMultiplier))
     }
+    var minConfText by remember(incomingConfig.minDetectionConfidence) {
+        mutableStateOf(String.format(Locale.US, "%.2f", incomingConfig.minDetectionConfidence))
+    }
+    var minFlightTimeText by remember(incomingConfig.minFlightTimeBeforeCashOutMs) {
+        mutableStateOf(incomingConfig.minFlightTimeBeforeCashOutMs.toString())
+    }
+    var maxBetRetriesText by remember(incomingConfig.maxBetRetries) {
+        mutableStateOf(incomingConfig.maxBetRetries.toString())
+    }
+    var retryDelayText by remember(incomingConfig.retryDelayMs) {
+        mutableStateOf(incomingConfig.retryDelayMs.toString())
+    }
+    var bettingWindowExpiryText by remember(incomingConfig.bettingWindowExpiryMs) {
+        mutableStateOf(incomingConfig.bettingWindowExpiryMs.toString())
+    }
 
     var startTimeText by remember(incomingConfig.scheduleStartHour, incomingConfig.scheduleStartMinute) {
         mutableStateOf(
@@ -214,53 +233,62 @@ fun SettingsAppearanceScreen(
         }.getOrNull() ?: "Selected Audio"
     }
 
-    val standardRingtonePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            @Suppress("DEPRECATION")
-            val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
-            applyNotifUpdate(localNotifSettings.copy(standardSoundUri = pickedUri?.toString().orEmpty()))
-        }
-    }
+    val hasActivityRegistry = LocalActivityResultRegistryOwner.current != null
 
-    val alarmRingtonePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            @Suppress("DEPRECATION")
-            val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
-            applyNotifUpdate(localNotifSettings.copy(alarmSoundUri = pickedUri?.toString().orEmpty()))
+    val standardRingtonePickerLauncher = if (hasActivityRegistry) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                @Suppress("DEPRECATION")
+                val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                applyNotifUpdate(localNotifSettings.copy(standardSoundUri = pickedUri?.toString().orEmpty()))
+            }
         }
-    }
+    } else null
 
-    val categoryRingtonePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val targetCat = pickingProfileCategory
-        pickingProfileCategory = null
-        if (result.resultCode == Activity.RESULT_OK && targetCat != null) {
-            @Suppress("DEPRECATION")
-            val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
-            val existing = alarmProfiles.firstOrNull { it.categoryName == targetCat.name }
-                ?: AlarmProfileEntity.defaultProfiles().first { it.categoryName == targetCat.name }
-            onSaveAlarmProfile(
-                existing.copy(
-                    soundUri = pickedUri?.toString().orEmpty(),
-                    soundLabel = resolvePickedSoundTitle(pickedUri)
+    val alarmRingtonePickerLauncher = if (hasActivityRegistry) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                @Suppress("DEPRECATION")
+                val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                applyNotifUpdate(localNotifSettings.copy(alarmSoundUri = pickedUri?.toString().orEmpty()))
+            }
+        }
+    } else null
+
+    val categoryRingtonePickerLauncher = if (hasActivityRegistry) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val targetCat = pickingProfileCategory
+            pickingProfileCategory = null
+            if (result.resultCode == Activity.RESULT_OK && targetCat != null) {
+                @Suppress("DEPRECATION")
+                val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                val existing = alarmProfiles.firstOrNull { it.categoryName == targetCat.name }
+                    ?: AlarmProfileEntity.defaultProfiles().first { it.categoryName == targetCat.name }
+                onSaveAlarmProfile(
+                    existing.copy(
+                        soundUri = pickedUri?.toString().orEmpty(),
+                        soundLabel = resolvePickedSoundTitle(pickedUri)
+                    )
                 )
-            )
+            }
         }
-    }
+    } else null
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(scrollState)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .verticalScroll(scrollState)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
         Text(
             text = "SETTINGS & PERMISSIONS",
             style = MaterialTheme.typography.titleMedium,
@@ -351,6 +379,107 @@ fun SettingsAppearanceScreen(
                             .testTag("settings_target_multiplier_input")
                     )
                 }
+            }
+        }
+
+        // Centralized Monitoring, Recognition & Execution Safety Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_execution_safety_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Security, contentDescription = "Safety Controls", tint = PrimaryCobalt)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "MONITORING, RECOGNITION & EXECUTION SAFETY",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = PrimaryCobalt
+                    )
+                }
+                StrategyToggleRow(
+                    label = "Auto Game Recognition (Multi-Game Switcher)",
+                    checked = localConfig.autoGameRecognitionEnabled,
+                    testTag = "settings_auto_game_recognition_switch"
+                ) { applyConfigUpdate(localConfig.copy(autoGameRecognitionEnabled = it)) }
+                StrategyToggleRow(
+                    label = "Collect & Record Confirmed Crash History",
+                    checked = localConfig.historyCollectionEnabled,
+                    testTag = "settings_history_collection_switch"
+                ) { applyConfigUpdate(localConfig.copy(historyCollectionEnabled = it)) }
+                StrategyToggleRow(
+                    label = "Automation Master Safety Lock (Allow Betting)",
+                    checked = localConfig.automationMasterEnabled,
+                    testTag = "settings_automation_master_switch"
+                ) { applyConfigUpdate(localConfig.copy(automationMasterEnabled = it)) }
+                StrategyToggleRow(
+                    label = "Dismiss Soft Keyboard Safely Before Bet",
+                    checked = localConfig.dismissKeyboardBeforeBet,
+                    testTag = "settings_dismiss_keyboard_switch"
+                ) { applyConfigUpdate(localConfig.copy(dismissKeyboardBeforeBet = it)) }
+                StrategyToggleRow(
+                    label = "Verify Stake Input Read-Back Before Bet",
+                    checked = localConfig.verifyStakeReadBack,
+                    testTag = "settings_verify_stake_switch"
+                ) { applyConfigUpdate(localConfig.copy(verifyStakeReadBack = it)) }
+                StrategyToggleRow(
+                    label = "Verify BET/CASH Button Readiness",
+                    checked = localConfig.verifyButtonStateBeforeAction,
+                    testTag = "settings_verify_button_switch"
+                ) { applyConfigUpdate(localConfig.copy(verifyButtonStateBeforeAction = it)) }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = minConfText,
+                        onValueChange = { minConfText = it },
+                        label = { Text("Min Confidence (0–1)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f).testTag("settings_min_confidence_input")
+                    )
+                    OutlinedTextField(
+                        value = maxBetRetriesText,
+                        onValueChange = { maxBetRetriesText = it },
+                        label = { Text("Max Bet Retries") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f).testTag("settings_max_bet_retries_input")
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = minFlightTimeText,
+                        onValueChange = { minFlightTimeText = it },
+                        label = { Text("Min Flight Guard (ms)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f).testTag("settings_min_flight_ms_input")
+                    )
+                    OutlinedTextField(
+                        value = retryDelayText,
+                        onValueChange = { retryDelayText = it },
+                        label = { Text("Retry Delay (ms)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f).testTag("settings_retry_delay_ms_input")
+                    )
+                }
+                OutlinedTextField(
+                    value = bettingWindowExpiryText,
+                    onValueChange = { bettingWindowExpiryText = it },
+                    label = { Text("Betting Window Expiry (ms)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().testTag("settings_betting_window_expiry_input")
+                )
             }
         }
 
@@ -870,7 +999,11 @@ fun SettingsAppearanceScreen(
                                 val current = localNotifSettings.standardSoundUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
                                 putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, current)
                             }
-                            runCatching { standardRingtonePickerLauncher.launch(pickerIntent) }
+                            if (standardRingtonePickerLauncher != null) {
+                                runCatching { standardRingtonePickerLauncher.launch(pickerIntent) }
+                            } else {
+                                Toast.makeText(context, "Tap Full Screen in the header to pick system tones", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.testTag("settings_standard_sound_picker_btn")
                     ) {
@@ -982,7 +1115,11 @@ fun SettingsAppearanceScreen(
                                 val current = localNotifSettings.alarmSoundUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
                                 putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, current)
                             }
-                            runCatching { alarmRingtonePickerLauncher.launch(pickerIntent) }
+                            if (alarmRingtonePickerLauncher != null) {
+                                runCatching { alarmRingtonePickerLauncher.launch(pickerIntent) }
+                            } else {
+                                Toast.makeText(context, "Tap Full Screen in the header to pick alarm tones", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.testTag("settings_alarm_sound_picker_btn")
                     ) {
@@ -1131,7 +1268,12 @@ fun SettingsAppearanceScreen(
                                 val current = profile.soundUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
                                 putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, current)
                             }
-                            runCatching { categoryRingtonePickerLauncher.launch(pickerIntent) }
+                            if (categoryRingtonePickerLauncher != null) {
+                                runCatching { categoryRingtonePickerLauncher.launch(pickerIntent) }
+                            } else {
+                                pickingProfileCategory = null
+                                Toast.makeText(context, "Tap Full Screen in the header to pick category tones", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         onClearSound = {
                             onSaveAlarmProfile(profile.copy(soundUri = "", soundLabel = "No sound selected"))
@@ -1302,7 +1444,17 @@ fun SettingsAppearanceScreen(
                         scheduleStartHour = startPair?.first ?: localConfig.scheduleStartHour,
                         scheduleStartMinute = startPair?.second ?: localConfig.scheduleStartMinute,
                         scheduleEndHour = stopPair?.first ?: localConfig.scheduleEndHour,
-                        scheduleEndMinute = stopPair?.second ?: localConfig.scheduleEndMinute
+                        scheduleEndMinute = stopPair?.second ?: localConfig.scheduleEndMinute,
+                        minDetectionConfidence = minConfText.trim().toFloatOrNull()?.coerceIn(0f, 1f)
+                            ?: localConfig.minDetectionConfidence,
+                        minFlightTimeBeforeCashOutMs = minFlightTimeText.trim().toLongOrNull()?.coerceIn(0L, 60_000L)
+                            ?: localConfig.minFlightTimeBeforeCashOutMs,
+                        maxBetRetries = maxBetRetriesText.trim().toIntOrNull()?.coerceIn(0, 10)
+                            ?: localConfig.maxBetRetries,
+                        retryDelayMs = retryDelayText.trim().toLongOrNull()?.coerceIn(100L, 5_000L)
+                            ?: localConfig.retryDelayMs,
+                        bettingWindowExpiryMs = bettingWindowExpiryText.trim().toLongOrNull()?.coerceIn(1_000L, 120_000L)
+                            ?: localConfig.bettingWindowExpiryMs
                     )
 
                     val finalizedNotif = localNotifSettings.copy(
@@ -1335,33 +1487,76 @@ fun SettingsAppearanceScreen(
             Text("SAVE & CLOSE", fontWeight = FontWeight.Bold)
         }
         Spacer(modifier = Modifier.height(80.dp))
-    }
+        }
 
-    if (showConfirmEndSessionDialog && onEndSessionAndClearData != null) {
-        BackHandler { showConfirmEndSessionDialog = false }
-        AlertDialog(
-            onDismissRequest = { showConfirmEndSessionDialog = false },
-            title = { Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold) },
-            text = {
-                Text("This stops monitoring, resets session crashes to 0, clears the current round indicator, stops any active alarm, and removes records logged during this session.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showConfirmEndSessionDialog = false
-                        onEndSessionAndClearData()
+        if (showConfirmEndSessionDialog && onEndSessionAndClearData != null) {
+            if (LocalOnBackPressedDispatcherOwner.current != null) {
+                BackHandler { showConfirmEndSessionDialog = false }
+            }
+            if (hasActivityRegistry) {
+                AlertDialog(
+                    onDismissRequest = { showConfirmEndSessionDialog = false },
+                    title = { Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text("This stops monitoring, resets session crashes to 0, clears the current round indicator, stops any active alarm, and removes records logged during this session.")
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White)
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showConfirmEndSessionDialog = false
+                                onEndSessionAndClearData()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White)
+                        ) {
+                            Text("END & CLEAR", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showConfirmEndSessionDialog = false }) {
+                            Text("CANCEL")
+                        }
+                    }
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("END & CLEAR", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirmEndSessionDialog = false }) {
-                    Text("CANCEL")
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("End Session & Clear Session Data?", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(
+                                "This stops monitoring, resets session crashes to 0, clears the current round indicator, stops any active alarm, and removes records logged during this session.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { showConfirmEndSessionDialog = false }, modifier = Modifier.weight(1f)) {
+                                    Text("CANCEL")
+                                }
+                                Button(
+                                    onClick = {
+                                        showConfirmEndSessionDialog = false
+                                        onEndSessionAndClearData()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("END & CLEAR", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 }
 

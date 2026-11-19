@@ -49,6 +49,21 @@ data class StartAutomationResult(
     val message: String
 )
 
+data class PendingBetOpportunity(
+    val id: String,
+    val strategyId: Long,
+    val strategyName: String,
+    val targetGameId: String = "ALL",
+    val occurrenceKey: String,
+    val createdAtMs: Long,
+    val expiresAtMs: Long,
+    val targetWinsToFetch: Int = 2,
+    val targetMultiplierOverride: Double? = null,
+    val progressionMode: StakeProgressionMode? = null,
+    val customAddAmount: Double? = null,
+    val priorityScore: Int = 0
+)
+
 interface TargetUiInteractor {
     fun applyStake(
         newStake: Double,
@@ -61,6 +76,8 @@ interface TargetUiInteractor {
     fun clickBet(fallbackX: Float?, fallbackY: Float?, onComplete: (Boolean) -> Unit)
     fun clickCashOut(fallbackX: Float?, fallbackY: Float?, onComplete: (Boolean) -> Unit)
     fun cancelPendingGestures(reason: String) {}
+    fun dismissKeyboardIfOpen(): Boolean = false
+    fun isButtonReady(expectBet: Boolean, config: StrategyConfig): Boolean = true
 }
 
 class AccessibilityTargetUiInteractor : TargetUiInteractor {
@@ -199,6 +216,24 @@ class AccessibilityTargetUiInteractor : TargetUiInteractor {
     override fun cancelPendingGestures(reason: String) {
         AccessibilityController.controllerInstance?.haltAllAutomationGestures(reason)
     }
+
+    override fun dismissKeyboardIfOpen(): Boolean {
+        val controller = AccessibilityController.controllerInstance
+        if (controller != null) {
+            return controller.dismissKeyboardIfOpen()
+        }
+        val service = ScreenEarnerAccessibilityService.instance
+        if (service != null && service.actionExecutor.isSoftKeyboardOpen()) {
+            return service.actionExecutor.dismissKeyboardSafely().success
+        }
+        return false
+    }
+
+    override fun isButtonReady(expectBet: Boolean, config: StrategyConfig): Boolean {
+        if (!config.verifyButtonStateBeforeAction) return true
+        val service = ScreenEarnerAccessibilityService.instance ?: return true
+        return service.actionExecutor.isTargetButtonReady(expectBet)
+    }
 }
 
 class AutomationEngine(
@@ -264,6 +299,24 @@ class AutomationEngine(
     private var sawCashOutAvailableInCurrentFlight = false
     private var inFlightWaitingNoticeEmitted = false
     private var currentRoundTriggerLabel = ""
+    private var activeSequenceExposure = 0.0
+
+    // Phase timing & bounded retry state
+    private var lastObservedPhaseInEngine: String = ""
+    private var lastBettingOpenAtMs: Long = 0L
+    private var lastBettingOpenWallClockMs: Long = 0L
+    private var inFlightStartedAtMs: Long = 0L
+    private var activeTargetMultiplierOverride: Double? = null
+
+    // Executable custom strategy opportunity queue
+    private val opportunityQueueLock = Any()
+    private val pendingOpportunityQueue = ArrayDeque<PendingBetOpportunity>()
+    private val enqueuedOccurrenceKeys = LinkedHashSet<String>()
+    private val _queuedOpportunityCount = MutableStateFlow(0)
+    val queuedOpportunityCount: StateFlow<Int> = _queuedOpportunityCount.asStateFlow()
+
+    var currentDailyLossProvider: ((nowMs: Long) -> Double)? = null
+    var onDailyNetOutcomeRecorded: ((netProfit: Double, nowMs: Long) -> Double)? = null
 
     @Volatile
     private var lastLifecycleNoticeStage: String? = null
@@ -290,6 +343,95 @@ class AutomationEngine(
 
     fun resetBetFailureEpisode() {
         lastBetFailureEpisodeKey = null
+    }
+
+    fun enqueueCustomStrategyOpportunity(
+        opportunity: PendingBetOpportunity,
+        config: StrategyConfig = latestConfigCache,
+        currentTimeMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (currentTimeMs > opportunity.expiresAtMs) return false
+        synchronized(opportunityQueueLock) {
+            pruneExpiredOpportunitiesLocked(currentTimeMs)
+            if (opportunity.occurrenceKey.isNotBlank() && !enqueuedOccurrenceKeys.add(opportunity.occurrenceKey)) {
+                return false
+            }
+            pendingOpportunityQueue.addLast(opportunity)
+            if (pendingOpportunityQueue.size > 1) {
+                val sorted = pendingOpportunityQueue.sortedByDescending { it.priorityScore }
+                pendingOpportunityQueue.clear()
+                pendingOpportunityQueue.addAll(sorted)
+            }
+            _queuedOpportunityCount.value = pendingOpportunityQueue.size
+        }
+        tryActivateNextQueuedOpportunity(config, currentTimeMs)
+        return true
+    }
+
+    fun tryActivateNextQueuedOpportunity(
+        config: StrategyConfig = latestConfigCache,
+        currentTimeMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (strategyEngine.getState().isBettingSessionActive) return false
+        val activeGameId = gameDetection.gameState.value.gameId.ifBlank { "unknown" }
+        val nextOpp: PendingBetOpportunity = synchronized(opportunityQueueLock) {
+            pruneExpiredOpportunitiesLocked(currentTimeMs)
+            val idx = pendingOpportunityQueue.indexOfFirst { opp ->
+                opp.targetGameId.isBlank() ||
+                    opp.targetGameId.equals("ALL", ignoreCase = true) ||
+                    activeGameId == "unknown" ||
+                    opp.targetGameId.equals(activeGameId, ignoreCase = true)
+            }
+            if (idx < 0) return false
+            val removed = pendingOpportunityQueue.removeAt(idx)
+            _queuedOpportunityCount.value = pendingOpportunityQueue.size
+            removed
+        }
+        val activated = strategyEngine.activateExternalPatternTrigger(
+            strategyName = nextOpp.strategyName,
+            config = config,
+            currentTimeMs = currentTimeMs,
+            progressionModeOverride = nextOpp.progressionMode,
+            customAddAmountOverride = nextOpp.customAddAmount,
+            targetWinsOverride = nextOpp.targetWinsToFetch,
+            targetMultiplierOverride = nextOpp.targetMultiplierOverride
+        )
+        if (activated) {
+            activeTargetMultiplierOverride = nextOpp.targetMultiplierOverride
+            gameDetection.updateStrategyTelemetry(
+                strategyEngine.getState(),
+                "Pattern Triggered: ${nextOpp.strategyName}"
+            )
+            if (_automationState.value == AutomationState.RUNNING && config.isAutoBetEnabled) {
+                notifyStrategyWaitingToBet(nextOpp.strategyName)
+            }
+        }
+        return activated
+    }
+
+    private fun pruneExpiredOpportunitiesLocked(currentTimeMs: Long) {
+        if (pendingOpportunityQueue.isEmpty()) return
+        val iter = pendingOpportunityQueue.iterator()
+        while (iter.hasNext()) {
+            val item = iter.next()
+            if (currentTimeMs > item.expiresAtMs) {
+                iter.remove()
+            }
+        }
+        if (enqueuedOccurrenceKeys.size > 200) {
+            val toKeep = pendingOpportunityQueue.mapTo(HashSet()) { it.occurrenceKey }
+            enqueuedOccurrenceKeys.retainAll(toKeep)
+        }
+        _queuedOpportunityCount.value = pendingOpportunityQueue.size
+    }
+
+    private fun clearOpportunityQueue() {
+        synchronized(opportunityQueueLock) {
+            pendingOpportunityQueue.clear()
+            enqueuedOccurrenceKeys.clear()
+            _queuedOpportunityCount.value = 0
+        }
+        activeTargetMultiplierOverride = null
     }
 
     private fun emitExecutionNotice(
@@ -406,12 +548,14 @@ class AutomationEngine(
         val ticker = when {
             gameState.liveDetectionLost ->
                 "LIVE DETECTION LOST — Check active game tab or scroll view"
-            _automationState.value == AutomationState.PAUSED ->
+            gameState.pipelineStatus == com.example.data.model.MonitoringPipelineStatus.PAUSED ->
                 "MONITORING PAUSED"
             gameState.status == "IN_FLIGHT" ->
                 "${gameState.displayedGameName}: Plane in flight (${String.format(Locale.US, "%.2f", gameState.currentMultiplier)}x)"
             gameState.status == "CRASHED" && gameState.latestCrashMultiplier != null ->
                 "${gameState.displayedGameName}: Crashed at ${String.format(Locale.US, "%.2f", gameState.latestCrashMultiplier)}x (${gameState.latestCrashColorCategory.displayName})"
+            _automationState.value == AutomationState.PAUSED || _automationState.value == AutomationState.EMERGENCY_STOP ->
+                "Monitoring Live (${gameState.displayedGameName}) — Automation Paused"
             else ->
                 "Monitoring ${gameState.displayedGameName} (${gameState.platformName})"
         }
@@ -442,9 +586,6 @@ class AutomationEngine(
     }
 
     fun verifyReadyForMonitoring(isAccessibilityConnected: Boolean, limits: RiskLimits): StartAutomationResult {
-        if (limits.emergencyStop) {
-            return StartAutomationResult(false, "Monitoring locked by Pause / Emergency Lock.")
-        }
         if (!isAccessibilityConnected) {
             return StartAutomationResult(false, "Enable Accessibility Service so Predict Manager can monitor live rounds.")
         }
@@ -458,13 +599,17 @@ class AutomationEngine(
     ): StartAutomationResult {
         val check = verifyReadyForMonitoring(isAccessibilityConnected, limits)
         if (!check.started) {
-            if (limits.emergencyStop) {
-                _automationState.value = AutomationState.EMERGENCY_STOP
-            }
             _lastRiskViolation.value = check.message
             return check
         }
-        startAutomation(config, limits)
+        if (limits.emergencyStop) {
+            latestConfigCache = config
+            latestLimitsCache = limits
+            _automationState.value = AutomationState.EMERGENCY_STOP
+            _lastRiskViolation.value = "Automation locked by Emergency Stop (Monitoring continues)."
+        } else {
+            startAutomation(config, limits)
+        }
         return check
     }
 
@@ -475,11 +620,12 @@ class AutomationEngine(
     ) {
         latestConfigCache = config
         latestLimitsCache = limits
+        sessionObservedCrashes = confirmedCrashCount.coerceAtLeast(0)
         if (limits.emergencyStop) {
             _automationState.value = AutomationState.EMERGENCY_STOP
+            publishSessionStats(limitHaltReason = "Emergency Stop active (Monitoring live)")
             return
         }
-        sessionObservedCrashes = confirmedCrashCount.coerceAtLeast(0)
         isPausedBySchedule = false
         val scheduleEval = OperatingScheduleEvaluator.evaluate(config)
         if (!scheduleEval.isWithinOperatingHours) {
@@ -574,6 +720,12 @@ class AutomationEngine(
         sessionWins = 0
         sessionLosses = 0
         sessionObservedCrashes = 0
+        activeSequenceExposure = 0.0
+        lastObservedPhaseInEngine = ""
+        lastBettingOpenAtMs = 0L
+        lastBettingOpenWallClockMs = 0L
+        inFlightStartedAtMs = 0L
+        clearOpportunityQueue()
         _lastRiskViolation.value = null
         publishSessionStats(limitHaltReason = null)
     }
@@ -636,6 +788,8 @@ class AutomationEngine(
         latestConfigCache = config
         latestLimitsCache = limits
         sessionObservedCrashes = sessionCrashCount.coerceAtLeast(0)
+        lastObservedPhaseInEngine = "CRASHED"
+        inFlightStartedAtMs = 0L
         publishSessionStats()
         settleActiveRoundBetIfNeeded(
             crashedMultiplier = multiplier,
@@ -645,7 +799,13 @@ class AutomationEngine(
             currentTimeMs = currentTimeMs
         )
         val trigger = strategyEngine.processCompletedRound(multiplier, config, currentTimeMs)
-        val stratState = strategyEngine.getState()
+        var stratState = strategyEngine.getState()
+        if (!stratState.isBettingSessionActive) {
+            activeSequenceExposure = 0.0
+            activeTargetMultiplierOverride = null
+            tryActivateNextQueuedOpportunity(config, currentTimeMs)
+            stratState = strategyEngine.getState()
+        }
         val triggerName = formatTriggerLabel(trigger, stratState)
         gameDetection.updateStrategyTelemetry(stratState, triggerName)
         if (_automationState.value == AutomationState.RUNNING &&
@@ -659,13 +819,15 @@ class AutomationEngine(
         }
     }
 
-    fun enforceLimitsNow(limits: RiskLimits): Boolean {
+    fun enforceLimitsNow(limits: RiskLimits, currentTimeMs: Long = System.currentTimeMillis()): Boolean {
         latestLimitsCache = limits
         if (_automationState.value != AutomationState.RUNNING) return false
+        val dailyLoss = currentDailyLossProvider?.invoke(currentTimeMs) ?: 0.0
         val check = riskManager.evaluateSessionLimits(
             currentSessionProfit = activeSessionProfit,
             currentSessionLoss = activeSessionLoss,
-            limits = limits
+            limits = limits,
+            currentDailyLoss = dailyLoss
         )
         if (!check.isAllowed) {
             haltAutomationForLimit(check.violationReason ?: "Session limit reached.")
@@ -760,9 +922,30 @@ class AutomationEngine(
         lastLifecycleNoticeStage = null
         isActionInProgress.set(false)
         lastBetFailureEpisodeKey = null
+        activeSequenceExposure = 0.0
+        clearOpportunityQueue()
         gameDetection.setBetPlaced(false)
         strategyEngine.reset()
-        publishStatusTicker("Automation stopped.")
+        publishStatusTicker("Automation stopped (Monitoring continues if active).")
+    }
+
+    fun triggerEmergencyStop(reason: String = "Emergency Stop active in Risk Settings.") {
+        latestLimitsCache = latestLimitsCache.copy(emergencyStop = true)
+        quitAutomation()
+        _automationState.value = AutomationState.EMERGENCY_STOP
+        _lastRiskViolation.value = reason
+        publishSessionStats(limitHaltReason = reason)
+        publishStatusTicker("Automation locked by Emergency Stop (Monitoring continues).")
+    }
+
+    fun clearEmergencyStop() {
+        latestLimitsCache = latestLimitsCache.copy(emergencyStop = false)
+        if (_automationState.value == AutomationState.EMERGENCY_STOP) {
+            _automationState.value = AutomationState.IDLE
+        }
+        _lastRiskViolation.value = null
+        publishSessionStats(limitHaltReason = null)
+        publishStatusTicker("Emergency Stop cleared.")
     }
 
     /**
@@ -849,20 +1032,40 @@ class AutomationEngine(
     ) {
         latestConfigCache = config
         latestLimitsCache = limits
+        if (phase != lastObservedPhaseInEngine) {
+            if (phase == "BETTING_OPEN") {
+                lastBettingOpenAtMs = currentTimeMs
+                lastBettingOpenWallClockMs = System.currentTimeMillis()
+                inFlightStartedAtMs = 0L
+                sawCashOutAvailableInCurrentFlight = false
+                inFlightWaitingNoticeEmitted = false
+            } else if (phase == "IN_FLIGHT") {
+                inFlightStartedAtMs = if (lastObservedPhaseInEngine == "BETTING_OPEN" &&
+                    lastBettingOpenAtMs > 0L &&
+                    liveMultiplier >= 1.25 &&
+                    (currentTimeMs - lastBettingOpenAtMs) >= config.minFlightTimeBeforeCashOutMs
+                ) {
+                    lastBettingOpenAtMs
+                } else {
+                    currentTimeMs
+                }
+            } else if (phase == "CRASHED") {
+                inFlightStartedAtMs = 0L
+            }
+            lastObservedPhaseInEngine = phase
+        }
         if (!evaluateOperatingSchedule(config, limits, currentTimeMs)) return
         if (_automationState.value != AutomationState.RUNNING) return
-        if (observationOnly) {
-            // AutoPredictor Prompt 1: Strictly observation & analysis only — never tap game controls or edit stakes
+        if (observationOnly || !config.automationMasterEnabled) {
+            // Strictly observation & analysis only — never tap game controls or edit stakes
             return
         }
-        if (enforceLimitsNow(limits)) return
+        if (enforceLimitsNow(limits, currentTimeMs)) return
 
-        val stratState = strategyEngine.getState()
-
-        if (phase == "BETTING_OPEN") {
-            sawCashOutAvailableInCurrentFlight = false
-            inFlightWaitingNoticeEmitted = false
+        if (phase == "BETTING_OPEN" && !strategyEngine.getState().isBettingSessionActive) {
+            tryActivateNextQueuedOpportunity(config, currentTimeMs)
         }
+        val stratState = strategyEngine.getState()
 
         if (siteButtonState == SiteButtonState.BET_QUEUED) {
             publishStatusTicker("Button state: CANCEL (Red) -> Waiting for round start")
@@ -1002,6 +1205,7 @@ class AutomationEngine(
                     stratState.activeProgressionMode
                 }
 
+                val dailyLoss = currentDailyLossProvider?.invoke(currentTimeMs) ?: 0.0
                 val riskCheck = riskManager.validateBetExecution(
                     proposedStake = proposedStake,
                     currentSessionLoss = activeSessionLoss,
@@ -1011,7 +1215,9 @@ class AutomationEngine(
                     limits = limits,
                     currentSessionProfit = activeSessionProfit,
                     balanceStatus = if (testBalanceOverride != null) BalanceDetectionStatus.VERIFIED else balState.status,
-                    balanceFailureReason = balState.failureReason
+                    balanceFailureReason = balState.failureReason,
+                    currentDailyLoss = dailyLoss,
+                    currentSequenceExposure = activeSequenceExposure + proposedStake
                 )
 
                 if (!riskCheck.isAllowed) {
@@ -1032,7 +1238,29 @@ class AutomationEngine(
                     return
                 }
 
-                // 4. Action Execution: Apply Stake then Click Bet
+                if (config.dismissKeyboardBeforeBet) {
+                    runCatching { targetUiInteractor.dismissKeyboardIfOpen() }
+                }
+
+                if (config.verifyButtonStateBeforeAction &&
+                    !targetUiInteractor.isButtonReady(expectBet = true, config = config)
+                ) {
+                    val failReason = "Target BET button is not ready (${gameDetection.gameState.value.siteButtonState})."
+                    val failedRecord = initialRecord.copy(
+                        state = ActionExecutionState.FAILED,
+                        completionTimestampMs = System.currentTimeMillis(),
+                        isSuccess = false,
+                        failureReason = failReason
+                    )
+                    _executionRecord.value = failedRecord
+                    _executionState.value = ActionExecutionState.FAILED
+                    gameDetection.updateExecutionRecord(failedRecord)
+                    recordActivityLog(actionId, ActionExecutionState.FAILED, "CLICK_BET", targetCoords, null, contextDetails, false, failReason)
+                    isActionInProgress.set(false)
+                    return
+                }
+
+                // 4. Action Execution: Apply Stake then Click Bet (with bounded retries on unconfirmed verification)
                 val stakeFallbackRect = when (effectiveMode) {
                     StakeProgressionMode.DOUBLE_AMOUNT -> uiTargets?.doubleButtonBounds
                     StakeProgressionMode.ADD_AMOUNT -> uiTargets?.addButtonBounds
@@ -1062,217 +1290,264 @@ class AutomationEngine(
                     cooldownMs = 0L
                 )
 
-                targetUiInteractor.applyStake(
-                    newStake = proposedStake,
-                    progressionMode = effectiveMode,
-                    fallbackX = stakeFallbackX,
-                    fallbackY = stakeFallbackY
-                ) { stakeOk ->
-                    val visibleStakeMatches = AccessibilityController.verifyStakeAccepted(
-                        uiTargets?.detectedStakeText,
-                        proposedStake
-                    )
-                    val canUseExistingBaseStake = targetUiInteractor is AccessibilityTargetUiInteractor &&
-                        stratState.currentStakeLevel <= 1 &&
-                        uiTargets?.stakeInputBounds == null
-                    val resolvedStakeOk = stakeOk ||
-                        (targetUiInteractor is AccessibilityTargetUiInteractor &&
-                            (visibleStakeMatches || canUseExistingBaseStake))
-
-                    if (!resolvedStakeOk) {
-                        val failReason = "Stake modification failed or was not verified by game input for ${CurrencyManager.formatAmount(proposedStake)}."
-                        val failedRecord = initialRecord.copy(
-                            state = ActionExecutionState.FAILED,
-                            completionTimestampMs = System.currentTimeMillis(),
-                            isSuccess = false,
-                            failureReason = failReason
-                        )
-                        _executionRecord.value = failedRecord
-                        _executionState.value = ActionExecutionState.FAILED
-                        gameDetection.updateExecutionRecord(failedRecord)
-                        recordActivityLog(actionId, ActionExecutionState.FAILED, "APPLY_STAKE", null, false, contextDetails, false, failReason)
-                        publishStatusTicker("Stake update failed")
-                        emitEpisodeFailureNotice("stake_edit", "Stake Edit Failed", failReason)
+                fun attemptStakeAndClickBet(attemptIndex: Int) {
+                    val windowExpired = lastBettingOpenWallClockMs > 0L &&
+                        config.bettingWindowExpiryMs > 0L &&
+                        attemptIndex > 0 &&
+                        (System.currentTimeMillis() - lastBettingOpenWallClockMs) > config.bettingWindowExpiryMs
+                    if (windowExpired ||
+                        _automationState.value != AutomationState.RUNNING ||
+                        lastObservedPhaseInEngine != "BETTING_OPEN"
+                    ) {
                         isActionInProgress.set(false)
-                        return@applyStake
+                        return
                     }
 
-                    if (!stakeOk) {
-                        recordActivityLog(
-                            actionId,
-                            ActionExecutionState.EXECUTING_ACTION,
-                            "APPLY_STAKE",
-                            targetCoords,
-                            true,
-                            "Stake input not directly exposed; proceeding with active game stake for $contextDetails",
-                            true,
-                            null
+                    targetUiInteractor.applyStake(
+                        newStake = proposedStake,
+                        progressionMode = effectiveMode,
+                        fallbackX = stakeFallbackX,
+                        fallbackY = stakeFallbackY
+                    ) { stakeOk ->
+                        val visibleStakeMatches = AccessibilityController.verifyStakeAccepted(
+                            uiTargets?.detectedStakeText,
+                            proposedStake
                         )
-                    }
+                        val canUseExistingBaseStake = targetUiInteractor is AccessibilityTargetUiInteractor &&
+                            stratState.currentStakeLevel <= 1 &&
+                            uiTargets?.stakeInputBounds == null
+                        val resolvedStakeOk = stakeOk ||
+                            (targetUiInteractor is AccessibilityTargetUiInteractor &&
+                                (!config.verifyStakeReadBack || visibleStakeMatches || canUseExistingBaseStake))
 
-                    publishStatusTicker("Button state: BET (Green) -> Placing bet now")
-                    recordActivityLog(actionId, ActionExecutionState.EXECUTING_ACTION, "CLICK_BET", targetCoords, null, "Stake accepted. Clicking BET target ($contextDetails).", null, null)
-
-                    // Ensure floating overlay hands enter pass-through BEFORE tapping the target BET coordinate
-                    if (fallbackBetX != null && fallbackBetY != null) {
-                        onGestureDispatchRequested?.invoke(fallbackBetX, fallbackBetY, "PLACE BET")
-                    }
-                    com.example.service.FloatingHandsOverlayManager.pulsePassThroughAll(240L)
-
-                    targetUiInteractor.clickBet(fallbackBetX, fallbackBetY) { gestureOk ->
-                        if (!gestureOk) {
-                            val failReason = "Bet click failed or gesture was rejected."
+                        if (!resolvedStakeOk) {
+                            if (attemptIndex < config.maxBetRetries.coerceAtLeast(0) &&
+                                lastObservedPhaseInEngine == "BETTING_OPEN" &&
+                                _automationState.value == AutomationState.RUNNING
+                            ) {
+                                publishStatusTicker("Retrying stake application (${attemptIndex + 1}/${config.maxBetRetries})...")
+                                scope.launch {
+                                    delay(config.retryDelayMs.coerceIn(10L, 2_000L))
+                                    attemptStakeAndClickBet(attemptIndex + 1)
+                                }
+                                return@applyStake
+                            }
+                            val failReason = "Stake modification failed or was not verified by game input for ${CurrencyManager.formatAmount(proposedStake)}."
                             val failedRecord = initialRecord.copy(
                                 state = ActionExecutionState.FAILED,
                                 completionTimestampMs = System.currentTimeMillis(),
                                 isSuccess = false,
-                                gestureDispatched = false,
                                 failureReason = failReason
                             )
                             _executionRecord.value = failedRecord
                             _executionState.value = ActionExecutionState.FAILED
                             gameDetection.updateExecutionRecord(failedRecord)
-                            recordActivityLog(actionId, ActionExecutionState.FAILED, "CLICK_BET", targetCoords, false, "Gesture rejected ($contextDetails)", false, failReason)
-                            publishStatusTicker("Bet click failed")
-                            emitEpisodeFailureNotice("bet_click", "Bet Click Failed", failReason)
+                            recordActivityLog(actionId, ActionExecutionState.FAILED, "APPLY_STAKE", null, false, contextDetails, false, failReason)
+                            publishStatusTicker("Stake update failed")
+                            emitEpisodeFailureNotice("stake_edit", "Stake Edit Failed", failReason)
                             isActionInProgress.set(false)
-                            return@clickBet
+                            return@applyStake
                         }
 
-                        // 1. Gesture Dispatched!
-                        // 2. Target interface responded / entering verification
-                        _executionState.value = ActionExecutionState.VERIFYING_ACTION
-                        val verifyingRecord = initialRecord.copy(
-                            state = ActionExecutionState.VERIFYING_ACTION,
-                            gestureDispatched = true,
-                            interfaceResponded = true
-                        )
-                        _executionRecord.value = verifyingRecord
-                        gameDetection.updateExecutionRecord(verifyingRecord)
-                        recordActivityLog(actionId, ActionExecutionState.VERIFYING_ACTION, "CLICK_BET", targetCoords, true, "Gesture dispatched ($contextDetails). Waiting for confirmation.", null, null)
-                        publishStatusTicker("Gesture dispatched. Verifying site confirmation...")
-
-                        // 3. Expected action state confirmed:
-                        fun confirmBetSuccess() {
-                            val completedRecord = initialRecord.copy(
-                                state = ActionExecutionState.COMPLETED,
-                                completionTimestampMs = System.currentTimeMillis(),
-                                isSuccess = true,
-                                gestureDispatched = true,
-                                interfaceResponded = true,
-                                stateConfirmed = true
+                        if (!stakeOk) {
+                            recordActivityLog(
+                                actionId,
+                                ActionExecutionState.EXECUTING_ACTION,
+                                "APPLY_STAKE",
+                                targetCoords,
+                                true,
+                                "Stake input not directly exposed; proceeding with active game stake for $contextDetails",
+                                true,
+                                null
                             )
-                            _executionRecord.value = completedRecord
-                            _executionState.value = ActionExecutionState.COMPLETED
-                            gameDetection.updateExecutionRecord(completedRecord)
-                            recordActivityLog(actionId, ActionExecutionState.COMPLETED, "PLACE_BET", targetCoords, true, "Site confirmed bet ($contextDetails)", true, null)
-                            publishStatusTicker("Bet confirmed on site. Waiting for round start.")
-
-                            // DO NOT mark round as having an active bet until verified!
-                            currentRoundBetActive = true
-                            currentRoundStake = proposedStake
-                            currentRoundCashedOut = false
-                            cashOutAttemptedThisRound = false
-                            currentRoundTriggerLabel = strategyLabel
-                            activeSessionRounds += 1
-                            lastBetFailureEpisodeKey = null
-                            gameDetection.setBetPlaced(true)
-
-                            StrategyEngine.triggerAction(
-                                AutomationActionEvent(
-                                    actionType = ActionType.BET,
-                                    amountOrMultiplier = proposedStake,
-                                    reason = "$strategyLabel (${CurrencyManager.formatCompact(proposedStake)})",
-                                    timestamp = currentTimeMs
-                                )
-                            )
-                            lastLifecycleNoticeStage = "BET_PLACED"
-                            emitExecutionNotice(
-                                type = StrategyNotificationType.AUTOMATION_ACTION,
-                                title = "Bet Placed: ${CurrencyManager.formatAmount(proposedStake)}",
-                                message = "Confirmed on $activeGameName ($strategyLabel, Round $activeRoundId).",
-                                occurrenceKey = "bet_ok_${actionId}",
-                                priority = NotificationPriorityLevel.STANDARD,
-                                cooldownMs = 0L
-                            )
-                            isActionInProgress.set(false)
                         }
 
-                        val currentBtnAtClick = gameDetection.gameState.value.siteButtonState
-                        if (targetUiInteractor !is AccessibilityTargetUiInteractor ||
-                            currentBtnAtClick == SiteButtonState.BET_QUEUED ||
-                            currentBtnAtClick == SiteButtonState.CASH_OUT_AVAILABLE
-                        ) {
-                            confirmBetSuccess()
-                        } else {
-                            val startCrashCount = sessionObservedCrashes
-                            // Launch verification coroutine with 2500ms timeout and guaranteed lock release
-                            val verifyJob = scope.launch {
-                                try {
-                                    var elapsed = 0L
-                                    var confirmed = false
-                                    while (elapsed < 2500L) {
-                                        delay(100L)
-                                        elapsed += 100L
-                                        val currentButtonState = gameDetection.gameState.value.siteButtonState
-                                        if (currentButtonState == SiteButtonState.BET_QUEUED ||
-                                            currentButtonState == SiteButtonState.CASH_OUT_AVAILABLE
-                                        ) {
-                                            confirmed = true
-                                            break
-                                        }
-                                        if (sessionObservedCrashes - startCrashCount >= 2) {
-                                            break
-                                        }
+                        publishStatusTicker("Button state: BET (Green) -> Placing bet now")
+                        recordActivityLog(actionId, ActionExecutionState.EXECUTING_ACTION, "CLICK_BET", targetCoords, null, "Stake accepted. Clicking BET target ($contextDetails).", null, null)
+
+                        if (fallbackBetX != null && fallbackBetY != null) {
+                            onGestureDispatchRequested?.invoke(fallbackBetX, fallbackBetY, "PLACE BET")
+                        }
+                        com.example.service.FloatingHandsOverlayManager.pulsePassThroughAll(240L)
+
+                        targetUiInteractor.clickBet(fallbackBetX, fallbackBetY) { gestureOk ->
+                            if (!gestureOk) {
+                                if (attemptIndex < config.maxBetRetries.coerceAtLeast(0) &&
+                                    lastObservedPhaseInEngine == "BETTING_OPEN" &&
+                                    _automationState.value == AutomationState.RUNNING
+                                ) {
+                                    publishStatusTicker("Retrying BET tap (${attemptIndex + 1}/${config.maxBetRetries})...")
+                                    scope.launch {
+                                        delay(config.retryDelayMs.coerceIn(10L, 2_000L))
+                                        attemptStakeAndClickBet(attemptIndex + 1)
                                     }
-                                    val roundsPassed = sessionObservedCrashes - startCrashCount
-                                    if (confirmed) {
-                                        confirmBetSuccess()
-                                    } else if (roundsPassed >= 2) {
-                                        val failReason = "Pattern expired: $roundsPassed subsequent rounds passed since strategy trigger. Aborting stale bet."
-                                        val expiredRecord = initialRecord.copy(
-                                            state = ActionExecutionState.FAILED,
-                                            completionTimestampMs = System.currentTimeMillis(),
-                                            isSuccess = false,
-                                            gestureDispatched = true,
-                                            interfaceResponded = false,
-                                            stateConfirmed = false,
-                                            failureReason = failReason
-                                        )
-                                        _executionRecord.value = expiredRecord
-                                        _executionState.value = ActionExecutionState.FAILED
-                                        gameDetection.updateExecutionRecord(expiredRecord)
-                                        recordActivityLog(actionId, ActionExecutionState.FAILED, "PLACE_BET", targetCoords, true, failReason, false, failReason)
-                                        publishStatusTicker("Pattern expired: 2+ rounds passed")
-                                        emitEpisodeFailureNotice("pattern_expired", "Bet Aborted (Pattern Expired)", failReason)
-                                    } else {
-                                        val failReason = "Action verification timed out (site button remained ${gameDetection.gameState.value.siteButtonState})."
-                                        val timeoutRecord = initialRecord.copy(
-                                            state = ActionExecutionState.FAILED,
-                                            completionTimestampMs = System.currentTimeMillis(),
-                                            isSuccess = false,
-                                            gestureDispatched = true,
-                                            interfaceResponded = false,
-                                            stateConfirmed = false,
-                                            failureReason = failReason
-                                        )
-                                        _executionRecord.value = timeoutRecord
-                                        _executionState.value = ActionExecutionState.FAILED
-                                        gameDetection.updateExecutionRecord(timeoutRecord)
-                                        recordActivityLog(actionId, ActionExecutionState.FAILED, "PLACE_BET", targetCoords, true, "Timeout waiting for button change ($contextDetails)", false, failReason)
-                                        publishStatusTicker("Verification timeout: Site did not confirm bet")
-                                        emitEpisodeFailureNotice("bet_verify_timeout", "Bet Not Confirmed", failReason)
-                                    }
-                                } finally {
-                                    isActionInProgress.set(false)
+                                    return@clickBet
                                 }
-                            }
-                            verifyJob.invokeOnCompletion {
+                                val failReason = "Bet click failed or gesture was rejected."
+                                val failedRecord = initialRecord.copy(
+                                    state = ActionExecutionState.FAILED,
+                                    completionTimestampMs = System.currentTimeMillis(),
+                                    isSuccess = false,
+                                    gestureDispatched = false,
+                                    failureReason = failReason
+                                )
+                                _executionRecord.value = failedRecord
+                                _executionState.value = ActionExecutionState.FAILED
+                                gameDetection.updateExecutionRecord(failedRecord)
+                                recordActivityLog(actionId, ActionExecutionState.FAILED, "CLICK_BET", targetCoords, false, "Gesture rejected ($contextDetails)", false, failReason)
+                                publishStatusTicker("Bet click failed")
+                                emitEpisodeFailureNotice("bet_click", "Bet Click Failed", failReason)
                                 isActionInProgress.set(false)
+                                return@clickBet
+                            }
+
+                            _executionState.value = ActionExecutionState.VERIFYING_ACTION
+                            val verifyingRecord = initialRecord.copy(
+                                state = ActionExecutionState.VERIFYING_ACTION,
+                                gestureDispatched = true,
+                                interfaceResponded = true
+                            )
+                            _executionRecord.value = verifyingRecord
+                            gameDetection.updateExecutionRecord(verifyingRecord)
+                            recordActivityLog(actionId, ActionExecutionState.VERIFYING_ACTION, "CLICK_BET", targetCoords, true, "Gesture dispatched ($contextDetails). Waiting for confirmation.", null, null)
+                            publishStatusTicker("Gesture dispatched. Verifying site confirmation...")
+
+                            fun confirmBetSuccess() {
+                                val completedRecord = initialRecord.copy(
+                                    state = ActionExecutionState.COMPLETED,
+                                    completionTimestampMs = System.currentTimeMillis(),
+                                    isSuccess = true,
+                                    gestureDispatched = true,
+                                    interfaceResponded = true,
+                                    stateConfirmed = true
+                                )
+                                _executionRecord.value = completedRecord
+                                _executionState.value = ActionExecutionState.COMPLETED
+                                gameDetection.updateExecutionRecord(completedRecord)
+                                recordActivityLog(actionId, ActionExecutionState.COMPLETED, "PLACE_BET", targetCoords, true, "Site confirmed bet ($contextDetails)", true, null)
+                                publishStatusTicker("Bet confirmed on site. Waiting for round start.")
+
+                                currentRoundBetActive = true
+                                currentRoundStake = proposedStake
+                                activeSequenceExposure += proposedStake
+                                currentRoundCashedOut = false
+                                cashOutAttemptedThisRound = false
+                                currentRoundTriggerLabel = strategyLabel
+                                activeSessionRounds += 1
+                                lastBetFailureEpisodeKey = null
+                                gameDetection.setBetPlaced(true)
+
+                                StrategyEngine.triggerAction(
+                                    AutomationActionEvent(
+                                        actionType = ActionType.BET,
+                                        amountOrMultiplier = proposedStake,
+                                        reason = "$strategyLabel (${CurrencyManager.formatCompact(proposedStake)})",
+                                        timestamp = currentTimeMs
+                                    )
+                                )
+                                lastLifecycleNoticeStage = "BET_PLACED"
+                                emitExecutionNotice(
+                                    type = StrategyNotificationType.AUTOMATION_ACTION,
+                                    title = "Bet Placed: ${CurrencyManager.formatAmount(proposedStake)}",
+                                    message = "Confirmed on $activeGameName ($strategyLabel, Round $activeRoundId).",
+                                    occurrenceKey = "bet_ok_${actionId}",
+                                    priority = NotificationPriorityLevel.STANDARD,
+                                    cooldownMs = 0L
+                                )
+                                isActionInProgress.set(false)
+                            }
+
+                            val currentBtnAtClick = gameDetection.gameState.value.siteButtonState
+                            if (targetUiInteractor !is AccessibilityTargetUiInteractor ||
+                                currentBtnAtClick == SiteButtonState.BET_QUEUED ||
+                                currentBtnAtClick == SiteButtonState.CASH_OUT_AVAILABLE
+                            ) {
+                                confirmBetSuccess()
+                            } else {
+                                val startCrashCount = sessionObservedCrashes
+                                val verifyJob = scope.launch {
+                                    var scheduledRetry = false
+                                    try {
+                                        var elapsed = 0L
+                                        var confirmed = false
+                                        while (elapsed < 2500L) {
+                                            delay(100L)
+                                            elapsed += 100L
+                                            val currentButtonState = gameDetection.gameState.value.siteButtonState
+                                            if (currentButtonState == SiteButtonState.BET_QUEUED ||
+                                                currentButtonState == SiteButtonState.CASH_OUT_AVAILABLE
+                                            ) {
+                                                confirmed = true
+                                                break
+                                            }
+                                            if (sessionObservedCrashes - startCrashCount >= 2) {
+                                                break
+                                            }
+                                        }
+                                        val roundsPassed = sessionObservedCrashes - startCrashCount
+                                        if (confirmed) {
+                                            confirmBetSuccess()
+                                        } else if (roundsPassed >= 2) {
+                                            val failReason = "Pattern expired: $roundsPassed subsequent rounds passed since strategy trigger. Aborting stale bet."
+                                            val expiredRecord = initialRecord.copy(
+                                                state = ActionExecutionState.FAILED,
+                                                completionTimestampMs = System.currentTimeMillis(),
+                                                isSuccess = false,
+                                                gestureDispatched = true,
+                                                interfaceResponded = false,
+                                                stateConfirmed = false,
+                                                failureReason = failReason
+                                            )
+                                            _executionRecord.value = expiredRecord
+                                            _executionState.value = ActionExecutionState.FAILED
+                                            gameDetection.updateExecutionRecord(expiredRecord)
+                                            recordActivityLog(actionId, ActionExecutionState.FAILED, "PLACE_BET", targetCoords, true, failReason, false, failReason)
+                                            publishStatusTicker("Pattern expired: 2+ rounds passed")
+                                            emitEpisodeFailureNotice("pattern_expired", "Bet Aborted (Pattern Expired)", failReason)
+                                        } else if (attemptIndex < config.maxBetRetries.coerceAtLeast(0) &&
+                                            lastObservedPhaseInEngine == "BETTING_OPEN" &&
+                                            _automationState.value == AutomationState.RUNNING
+                                        ) {
+                                            scheduledRetry = true
+                                            publishStatusTicker("Retrying bet confirmation (${attemptIndex + 1}/${config.maxBetRetries})...")
+                                            delay(config.retryDelayMs.coerceIn(100L, 2_000L))
+                                            attemptStakeAndClickBet(attemptIndex + 1)
+                                        } else {
+                                            val failReason = "Action verification timed out (site button remained ${gameDetection.gameState.value.siteButtonState})."
+                                            val timeoutRecord = initialRecord.copy(
+                                                state = ActionExecutionState.FAILED,
+                                                completionTimestampMs = System.currentTimeMillis(),
+                                                isSuccess = false,
+                                                gestureDispatched = true,
+                                                interfaceResponded = false,
+                                                stateConfirmed = false,
+                                                failureReason = failReason
+                                            )
+                                            _executionRecord.value = timeoutRecord
+                                            _executionState.value = ActionExecutionState.FAILED
+                                            gameDetection.updateExecutionRecord(timeoutRecord)
+                                            recordActivityLog(actionId, ActionExecutionState.FAILED, "PLACE_BET", targetCoords, true, "Timeout waiting for button change ($contextDetails)", false, failReason)
+                                            publishStatusTicker("Verification timeout: Site did not confirm bet")
+                                            emitEpisodeFailureNotice("bet_verify_timeout", "Bet Not Confirmed", failReason)
+                                        }
+                                    } finally {
+                                        if (!scheduledRetry) {
+                                            isActionInProgress.set(false)
+                                        }
+                                    }
+                                }
+                                verifyJob.invokeOnCompletion {
+                                    // Safety fallback release if coroutine cancelled before retry chain
+                                    if (verifyJob.isCancelled) {
+                                        isActionInProgress.set(false)
+                                    }
+                                }
                             }
                         }
                     }
                 }
+
+                attemptStakeAndClickBet(0)
             } catch (t: Throwable) {
                 isActionInProgress.set(false)
                 throw t
@@ -1323,7 +1598,7 @@ class AutomationEngine(
                     gameDetection.setBetPlaced(false)
                 }
             }
-            evaluateInFlightMultiplier(liveMultiplier, config, siteButtonState, limits)
+            evaluateInFlightMultiplier(liveMultiplier, config, siteButtonState, limits, currentTimeMs)
         }
     }
 
@@ -1533,8 +1808,13 @@ class AutomationEngine(
         }
         activeSessionProfit += netProfit
         activeSessionLoss = kotlin.math.max(0.0, -activeSessionProfit)
+        onDailyNetOutcomeRecorded?.invoke(netProfit, currentTimeMs)
 
         val updatedState = strategyEngine.processBetOutcome(isWin, crashedMultiplier, config, currentTimeMs)
+        if (!updatedState.isBettingSessionActive) {
+            activeSequenceExposure = 0.0
+            activeTargetMultiplierOverride = null
+        }
         gameDetection.updateStrategyTelemetry(updatedState, formatTriggerLabel(updatedState.activeTrigger, updatedState))
 
         publishSessionStats()
@@ -1553,8 +1833,8 @@ class AutomationEngine(
             cooldownMs = 0L
         )
 
-        // Immediately halt all automation gestures if Stop if Profit Reaches or Stop if Loss Reaches triggered
-        enforceLimitsNow(limits)
+        // Immediately halt all automation gestures if Stop if Profit Reaches, Stop if Loss Reaches, or Daily Loss triggers
+        enforceLimitsNow(limits, currentTimeMs)
 
         scope.launch {
             repository.addSessionLog(
@@ -1582,28 +1862,41 @@ class AutomationEngine(
         currentMultiplier: Double,
         config: StrategyConfig,
         siteButtonState: SiteButtonState = SiteButtonState.CASH_OUT_AVAILABLE,
-        limits: RiskLimits = RiskLimits()
+        limits: RiskLimits = RiskLimits(),
+        currentTimeMs: Long = System.currentTimeMillis()
     ) {
-        if (enforceLimitsNow(limits)) return
+        if (enforceLimitsNow(limits, currentTimeMs)) return
+        val flightElapsedMs = if (inFlightStartedAtMs > 0L) (currentTimeMs - inFlightStartedAtMs).coerceAtLeast(0L) else Long.MAX_VALUE
+        if (config.minFlightTimeBeforeCashOutMs > 0L && flightElapsedMs < config.minFlightTimeBeforeCashOutMs) {
+            return
+        }
         val cashOutAllowed = siteButtonState == SiteButtonState.CASH_OUT_AVAILABLE ||
             siteButtonState == SiteButtonState.UNKNOWN
-        val autoCashOutActive = (config.isAutoCashOutEnabled || config.isAutoBetEnabled) &&
+        val autoCashOutActive = config.automationMasterEnabled &&
+            (config.isAutoCashOutEnabled || config.isAutoBetEnabled) &&
             config.targetMultiplier >= 1.01
         val hasTrackedOrManualBet = gameDetection.gameState.value.isBetPlaced ||
             currentRoundBetActive ||
             (config.isAutoCashOutEnabled && siteButtonState == SiteButtonState.CASH_OUT_AVAILABLE)
+        val baseOrOverrideTarget = (activeTargetMultiplierOverride ?: config.targetMultiplier).coerceAtLeast(1.01)
         if (_automationState.value == AutomationState.RUNNING &&
             autoCashOutActive &&
             cashOutAllowed &&
             hasTrackedOrManualBet &&
             !currentRoundCashedOut &&
             !cashOutAttemptedThisRound &&
-            currentMultiplier >= config.targetMultiplier
+            currentMultiplier >= baseOrOverrideTarget
         ) {
             val cashOutShortcut = findActiveShortcut(ShortcutType.CASH_OUT)
             val shortcutTarget = cashOutShortcut?.targetMultiplier ?: 0.0
-            val effectiveTarget = kotlin.math.max(config.targetMultiplier, if (shortcutTarget > 1.0) shortcutTarget else config.targetMultiplier)
+            val effectiveTarget = kotlin.math.max(baseOrOverrideTarget, if (shortcutTarget > 1.0) shortcutTarget else baseOrOverrideTarget)
             if (currentMultiplier < effectiveTarget) return
+            if (config.verifyButtonStateBeforeAction &&
+                targetUiInteractor is AccessibilityTargetUiInteractor &&
+                !targetUiInteractor.isButtonReady(expectBet = false, config = config)
+            ) {
+                return
+            }
 
             val uiTargets = AccessibilityController.controllerInstance?.getLatestUiTargets()
             val fallbackCashX = cashOutShortcut?.targetX

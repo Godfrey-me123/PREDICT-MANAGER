@@ -46,6 +46,7 @@ import com.example.service.FloatingOverlayService
 import com.example.service.ScreenCaptureProjectionService
 import com.example.service.ScreenEarnerAccessibilityService
 import com.example.service.ScreenEarnerOverlayService
+import com.example.ui.navigation.AppRoute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -222,6 +223,9 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
     private val _selectedTab = MutableStateFlow(MainActivity.TAB_HOME)
     val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
 
+    private val _activeRoute = MutableStateFlow(AppRoute.HOME)
+    val activeRoute: StateFlow<AppRoute> = _activeRoute.asStateFlow()
+
     private val _previousTab = MutableStateFlow(MainActivity.TAB_HOME)
     val previousTab: StateFlow<Int> = _previousTab.asStateFlow()
 
@@ -239,9 +243,13 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
         AutomationController.setSelectedGameId(gameId)
     }
 
+    fun navigateToRoute(route: AppRoute) {
+        selectTab(route.tabIndex)
+    }
+
     fun selectTab(index: Int) {
         val current = _selectedTab.value
-        val coerced = index.coerceIn(MainActivity.TAB_HOME, MainActivity.TAB_SETTINGS)
+        val coerced = index.coerceIn(MainActivity.TAB_HOME, MainActivity.TAB_RISK_MANAGER)
         if (coerced != current) {
             if (current == MainActivity.TAB_HOME ||
                 current == MainActivity.TAB_LIVE_MONITOR ||
@@ -253,6 +261,7 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
                 _previousTab.value = current
             }
             _selectedTab.value = coerced
+            _activeRoute.value = AppRoute.fromTabIndex(coerced)
         }
     }
 
@@ -261,13 +270,38 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
         val candidatePrev = _previousTab.value
         val target = if (candidatePrev != current &&
             candidatePrev != MainActivity.TAB_STRATEGY &&
-            candidatePrev != MainActivity.TAB_SETTINGS
+            candidatePrev != MainActivity.TAB_SETTINGS &&
+            candidatePrev != MainActivity.TAB_RISK_MANAGER
         ) {
             candidatePrev
         } else {
             MainActivity.TAB_HOME
         }
         _selectedTab.value = target
+        _activeRoute.value = AppRoute.fromTabIndex(target)
+    }
+
+    fun openInOverlayMode(context: Context, route: AppRoute = _activeRoute.value) {
+        try {
+            if (!Settings.canDrawOverlays(context)) {
+                toggleOverlayService(context)
+                return
+            }
+            val intent = Intent(context, ScreenEarnerOverlayService::class.java).apply {
+                action = ScreenEarnerOverlayService.ACTION_OPEN_OVERLAY_ROUTE
+                putExtra(ScreenEarnerOverlayService.EXTRA_OVERLAY_ROUTE, route.name)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            _isOverlayServiceRunning.value = true
+            _userMessage.value = "Switched to Floating Overlay (${route.shortLabel})"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed switching to overlay mode", e)
+            _userMessage.value = "Unable to open overlay container"
+        }
     }
 
     /**
@@ -319,6 +353,39 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
             _userMessage.value = "Monitoring STOPPED"
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop monitoring", e)
+        }
+    }
+
+    /**
+     * Independent Automation Assistant controls (never stops or interrupts live Monitoring Engine).
+     */
+    fun startAutomationAssistant() {
+        try {
+            val result = AutomationController.startAutomationAssistant(
+                isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected()
+            )
+            _userMessage.value = if (result.started) "Automation Assistant ACTIVE" else result.message
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed starting automation assistant", e)
+            _userMessage.value = "Unable to start Automation Assistant"
+        }
+    }
+
+    fun pauseAutomationAssistant() {
+        try {
+            AutomationController.pauseAutomationAssistant()
+            _userMessage.value = "Automation Assistant PAUSED (Monitoring continues)"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed pausing automation assistant", e)
+        }
+    }
+
+    fun stopAutomationAssistant() {
+        try {
+            AutomationController.stopAutomationAssistant()
+            _userMessage.value = "Automation Assistant STOPPED (Monitoring continues)"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed stopping automation assistant", e)
         }
     }
 
@@ -379,7 +446,13 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
             scheduleStartHour = config.scheduleStartHour.coerceIn(0, 23),
             scheduleStartMinute = config.scheduleStartMinute.coerceIn(0, 59),
             scheduleEndHour = config.scheduleEndHour.coerceIn(0, 23),
-            scheduleEndMinute = config.scheduleEndMinute.coerceIn(0, 59)
+            scheduleEndMinute = config.scheduleEndMinute.coerceIn(0, 59),
+            minDetectionConfidence = config.minDetectionConfidence.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.5f,
+            preferredGameId = config.preferredGameId.ifBlank { "ALL" },
+            minFlightTimeBeforeCashOutMs = config.minFlightTimeBeforeCashOutMs.coerceIn(0L, 60_000L),
+            maxBetRetries = config.maxBetRetries.coerceIn(0, 10),
+            retryDelayMs = config.retryDelayMs.coerceIn(100L, 5_000L),
+            bettingWindowExpiryMs = config.bettingWindowExpiryMs.coerceIn(1_000L, 120_000L)
         ).withUpdatedRuleConfigs(sanitizedRules)
     }
 
@@ -390,7 +463,10 @@ class ScreenEarnerViewModel(application: Application) : AndroidViewModel(applica
             maxTotalRounds = limits.maxTotalRounds.coerceAtLeast(1),
             maxProgressionLevel = limits.maxProgressionLevel.coerceAtLeast(1),
             profitTarget = limits.profitTarget.takeIf { it.isFinite() && it >= 0.0 } ?: 1500.0,
-            minBalanceThreshold = limits.minBalanceThreshold.takeIf { it.isFinite() && it >= 0.0 } ?: 50.0
+            minBalanceThreshold = limits.minBalanceThreshold.takeIf { it.isFinite() && it >= 0.0 } ?: 50.0,
+            maxSequenceExposure = limits.maxSequenceExposure.takeIf { it.isFinite() && it >= 0.0 } ?: 500.0,
+            maxDailyLoss = limits.maxDailyLoss.takeIf { it.isFinite() && it >= 0.0 } ?: 500.0,
+            safetyReserveAmount = limits.safetyReserveAmount.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
         )
     }
 

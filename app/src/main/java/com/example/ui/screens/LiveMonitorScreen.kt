@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,6 +56,7 @@ import com.example.data.engine.HistoryCollectionMetadata
 import com.example.data.engine.MultiplierHistoryAnalyzer
 import com.example.data.model.CrashRecord
 import com.example.data.model.GameState
+import com.example.data.model.MonitoringStatus
 import com.example.data.model.StrategyConfig
 import com.example.ui.components.BoundedCrashHistoryGrid
 import com.example.ui.components.LiveCrashHeaderCard
@@ -79,11 +82,21 @@ fun LiveMonitorScreen(
     onCollectHistory: () -> Unit,
     onRequestPixelCapture: () -> Unit,
     onStopPixelCapture: () -> Unit,
-    onEndSessionAndClear: () -> Unit = {}
+    onEndSessionAndClear: () -> Unit = {},
+    monitoringStatus: MonitoringStatus = gameState.monitoringStatus,
+    queuedOpportunitiesCount: Int = 0,
+    onStartAutomationAssistant: (() -> Unit)? = null,
+    onPauseAutomationAssistant: (() -> Unit)? = null,
+    onStopAutomationAssistant: (() -> Unit)? = null,
+    onToggleBetHand: (() -> Unit)? = null,
+    onToggleCashOutHand: (() -> Unit)? = null
 ) {
     val config = strategyConfig ?: StrategyConfig()
     val scrollState = rememberScrollState()
-    val isRunning = automationState == AutomationState.RUNNING
+    val isRunning = monitoringStatus == MonitoringStatus.MONITORING ||
+        monitoringStatus == MonitoringStatus.WAITING_FOR_GAME ||
+        monitoringStatus == MonitoringStatus.GAME_NOT_ACCESSIBLE ||
+        monitoringStatus == MonitoringStatus.GAME_SUSPENDED
     val adapters = remember { GameAdapterRegistry.allAdapters() }
     val activeGameRecords = remember(crashRecords, gameState.isDetected, gameState.gameId, selectedGameId) {
         val target = if (gameState.isDetected && gameState.gameId.isNotBlank()) gameState.gameId else selectedGameId
@@ -275,6 +288,83 @@ fun LiveMonitorScreen(
                         fontSize = 12.sp,
                         color = ActionStopRed
                     )
+                }
+            }
+        }
+
+        if (onStartAutomationAssistant != null || onToggleBetHand != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("live_automation_assistant_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("AUTOMATION ASSISTANT", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PrimaryCobalt)
+                            Text(
+                                text = "State: ${automationState.name} · Queued Strategies: $queuedOpportunitiesCount",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (onStartAutomationAssistant != null && onPauseAutomationAssistant != null && onStopAutomationAssistant != null) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = onStartAutomationAssistant,
+                                colors = ButtonDefaults.buttonColors(containerColor = ActionStartEmerald, contentColor = Color.White),
+                                modifier = Modifier.weight(1f).height(44.dp).testTag("live_start_auto_btn")
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("AUTO ON", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = onPauseAutomationAssistant,
+                                modifier = Modifier.weight(1f).height(44.dp).testTag("live_pause_auto_btn")
+                            ) {
+                                Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PAUSE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = onStopAutomationAssistant,
+                                modifier = Modifier.weight(1f).height(44.dp).testTag("live_stop_auto_btn")
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = null, tint = ActionStopRed, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("STOP", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ActionStopRed)
+                            }
+                        }
+                    }
+                    if (onToggleBetHand != null && onToggleCashOutHand != null) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = onToggleBetHand,
+                                modifier = Modifier.weight(1f).height(44.dp).testTag("live_toggle_bet_hand_btn")
+                            ) {
+                                Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("BET Hand", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            OutlinedButton(
+                                onClick = onToggleCashOutHand,
+                                modifier = Modifier.weight(1f).height(44.dp).testTag("live_toggle_cash_hand_btn")
+                            ) {
+                                Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("CASH Hand", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
                 }
             }
         }

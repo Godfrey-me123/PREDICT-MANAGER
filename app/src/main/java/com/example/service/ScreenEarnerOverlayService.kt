@@ -29,12 +29,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -46,6 +48,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Close
@@ -53,16 +56,23 @@ import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -105,11 +115,27 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.example.MainActivity
 import com.example.R
 import com.example.data.engine.AutomationState
+import com.example.data.engine.HistoryCollectionMetadata
+import com.example.data.engine.HourlyAnalysisEngine
 import com.example.data.engine.OperatingScheduleEvaluator
 import com.example.data.model.GameState
+import com.example.data.model.MonitoringStatus
+import com.example.data.model.NotificationInteractionStatus
+import com.example.data.model.RiskLimits
 import com.example.data.model.SessionStats
+import com.example.data.model.ShortcutType
 import com.example.ui.components.BoundedCrashHistoryGrid
 import com.example.ui.components.LiveCrashHeaderCard
+import com.example.ui.navigation.AppRoute
+import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.HourlyAnalysisScreen
+import com.example.ui.screens.LiveMonitorScreen
+import com.example.ui.screens.LogsAnalyticsScreen
+import com.example.ui.screens.NotificationCenterScreen
+import com.example.ui.screens.PatternRecognitionScreen
+import com.example.ui.screens.RiskManagerScreen
+import com.example.ui.screens.SettingsAppearanceScreen
+import com.example.ui.screens.StrategyScreen
 import com.example.ui.theme.ActionCashOutAmber
 import com.example.ui.theme.ActionStartEmerald
 import com.example.ui.theme.ActionStopRed
@@ -144,6 +170,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         const val PREF_BUBBLE_SIZE_DP = "bubble_size_dp"
         const val PREF_HAPTICS_ENABLED = "haptics_enabled"
         const val ACTION_OPEN_OVERLAY_SETTINGS = "ACTION_OPEN_OVERLAY_SETTINGS"
+        const val ACTION_OPEN_OVERLAY_ROUTE = "ACTION_OPEN_OVERLAY_ROUTE"
+        const val EXTRA_OVERLAY_ROUTE = "extra_overlay_route"
 
         var isRunning = false
             private set
@@ -186,6 +214,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     private var isPanelVisible = false
     private var isSettingsOverlayVisible = false
     private var statusBannerMessage = MutableStateFlow<String?>(null)
+    private val overlayRouteStack = MutableStateFlow(listOf(AppRoute.SETTINGS))
+    private var floatingHandsManager: FloatingHandsOverlayManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var isKeepAwakeEngaged = false
     private var lastToastTicker: String = ""
@@ -202,6 +232,37 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun isMonitoringStatusActive(status: MonitoringStatus): Boolean =
+        status == MonitoringStatus.MONITORING ||
+            status == MonitoringStatus.WAITING_FOR_GAME ||
+            status == MonitoringStatus.GAME_NOT_ACCESSIBLE ||
+            status == MonitoringStatus.GAME_SUSPENDED
+
+    private fun getOrCreateFloatingHandsManager(): FloatingHandsOverlayManager? {
+        floatingHandsManager?.let { return it }
+        val repo = AutomationController.repository ?: return null
+        val eng = AutomationController.engine ?: return null
+        return FloatingHandsOverlayManager(this, repo, eng).also { floatingHandsManager = it }
+    }
+
+    private fun toggleCalibrationHand(type: ShortcutType) {
+        val manager = getOrCreateFloatingHandsManager()
+        if (manager == null) {
+            Toast.makeText(this, "Overlay calibration manager initializing...", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val shortcuts = AutomationController.latestShortcuts.value
+        val existing = if (type == ShortcutType.BET) {
+            shortcuts.firstOrNull { it.type == ShortcutType.BET && it.isCalibrated && it.targetX > 0f }
+                ?: shortcuts.firstOrNull { it.type == ShortcutType.BET && it.label.contains("HAND", ignoreCase = true) }
+        } else {
+            shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT && it.isCalibrated && it.targetX > 0f }
+                ?: shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT }
+        }
+        val targetMult = AutomationController.latestConfig.value.targetMultiplier
+        manager.showOrToggleHand(type, existing, targetMult)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -220,7 +281,13 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
             }
             ACTION_OPEN_OVERLAY_SETTINGS -> {
                 removeCompactControlPanel()
-                showSettingsOverlayPanel()
+                showSettingsOverlayPanel(AppRoute.SETTINGS)
+            }
+            ACTION_OPEN_OVERLAY_ROUTE -> {
+                val routeName = intent.getStringExtra(EXTRA_OVERLAY_ROUTE)
+                val targetRoute = AppRoute.entries.firstOrNull { it.name == routeName } ?: AppRoute.HOME
+                removeCompactControlPanel()
+                showSettingsOverlayPanel(targetRoute)
             }
         }
         return START_STICKY
@@ -232,12 +299,6 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         isRunning = true
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    createNotification(),
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
                     createNotification(),
@@ -278,6 +339,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
 
     private fun registerGesturePassThroughListener() {
         AccessibilityController.gestureOverlayPassThroughListener = { isDispatching ->
+            FloatingHandsOverlayManager.setAllPassThrough(isDispatching)
             val wm = windowManager
             if (wm != null) {
                 fun updateTouchable(view: View?, params: WindowManager.LayoutParams?) {
@@ -303,15 +365,15 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     private fun observeKeepAwakeAndDiagnostics() {
         val engine = AutomationController.engine
 
-        // Req 5: Acquire FLAG_KEEP_SCREEN_ON and bounded CPU wake lock ONLY while active scheduled monitoring is running AND enabled
+        // Req 5: Acquire FLAG_KEEP_SCREEN_ON and bounded CPU wake lock while Monitoring Engine is active (independent of Automation)
         serviceScope.launch {
             if (engine != null) {
                 combine(
                     AutomationController.latestConfig,
-                    engine.automationState,
+                    AutomationController.monitoringStatus,
                     engine.isStandbyOutsideSchedule
-                ) { cfg, autoState, standby ->
-                    cfg.keepScreenAwake && autoState == AutomationState.RUNNING && !standby
+                ) { cfg, monStatus, standby ->
+                    cfg.keepScreenAwake && isMonitoringStatusActive(monStatus) && !standby
                 }.distinctUntilChanged().collect { shouldHold ->
                     isKeepAwakeEngaged = shouldHold
                     applyScreenAwakeFlag(shouldHold)
@@ -622,17 +684,16 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
             setViewTreeSavedStateRegistryOwner(this@ScreenEarnerOverlayService)
         }
 
-        val engine = AutomationController.engine
-        val automationFlow = engine?.automationState ?: MutableStateFlow(AutomationState.IDLE)
+        val monitoringStatusFlow = AutomationController.monitoringStatus
 
         val composeView = ComposeView(this).apply {
             setContent {
                 AutoPredictorTheme(darkTheme = false) {
-                    val automationState by automationFlow.collectAsState()
+                    val monStatus by monitoringStatusFlow.collectAsState()
                     FloatingMonitorBubbleComposable(
                         coreSizeDp = bubbleDp,
                         opacity = bubbleOpacity,
-                        isRunningActive = automationState == AutomationState.RUNNING
+                        isRunningActive = isMonitoringStatusActive(monStatus)
                     )
                 }
             }
@@ -726,6 +787,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         val engine = AutomationController.engine
         val statsFlow = engine?.sessionStats ?: MutableStateFlow(SessionStats())
         val automationFlow = engine?.automationState ?: MutableStateFlow(AutomationState.IDLE)
+        val monitoringFlow = AutomationController.monitoringStatus
         val gameStateFlow = engine?.gameDetection?.gameState ?: MutableStateFlow(GameState())
         val sessionCrashRecordsFlow = AutomationController.activeSessionCrashRecords
 
@@ -734,6 +796,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                 AutoPredictorTheme(darkTheme = false) {
                     val stats by statsFlow.collectAsState()
                     val autoState by automationFlow.collectAsState()
+                    val monStatus by monitoringFlow.collectAsState()
                     val gs by gameStateFlow.collectAsState()
                     val sessionCrashes by sessionCrashRecordsFlow.collectAsState()
                     val latestCrashVal = sessionCrashes.firstOrNull()?.multiplier ?: gs.latestCrashMultiplier
@@ -746,7 +809,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                         liveMultiplier = gs.currentMultiplier,
                         liveDetectionLost = gs.liveDetectionLost,
                         latestCrashMultiplier = latestCrashVal,
-                        latestRoundId = gs.latestRoundId
+                        latestRoundId = gs.latestRoundId,
+                        monitoringStatus = monStatus
                     )
                 }
             }
@@ -866,6 +930,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                 AutoPredictorTheme(darkTheme = false) {
                     val gameState by gameStateFlow.collectAsState()
                     val automationState by automationStateFlow.collectAsState()
+                    val monitoringStatus by AutomationController.monitoringStatus.collectAsState()
                     val agentTicker by tickerFlow.collectAsState()
                     val isStandby by standbyFlow.collectAsState()
                     val activeConfig by AutomationController.latestConfig.collectAsState()
@@ -886,7 +951,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                         val targetId = if (gameState.isDetected) gameState.gameId else selectedGameId
                         if (targetId == "ALL") allCrashRecords else allCrashRecords.filter { it.gameId == targetId }
                     }
-                    val isRunningMonitor = automationState == AutomationState.RUNNING
+                    val isRunningMonitor = isMonitoringStatusActive(monitoringStatus)
+                    val isAutoRunning = automationState == AutomationState.RUNNING
 
                     Card(
                         modifier = Modifier
@@ -1164,11 +1230,11 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                 }
                             }
 
-                            // Quick in-game access shortcuts (monitoring stays running when jumping between screens)
+                            // Quick in-game access shortcuts — ALL open inside Unified Overlay Container without leaving game!
                             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     OverlayMenuButton(
-                                        label = if (isRunningMonitor) "PAUSE" else "MONITOR",
+                                        label = if (isRunningMonitor) "PAUSE MON" else "MONITOR",
                                         icon = if (isRunningMonitor) Icons.Default.Pause else Icons.Default.PlayArrow,
                                         color = if (isRunningMonitor) ActionStopRed else ActionStartEmerald,
                                         onClick = { handleOverlayStartStop() },
@@ -1177,14 +1243,59 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                             .testTag("overlay_pause_btn")
                                     )
                                     OverlayMenuButton(
+                                        label = if (isAutoRunning) "AUTO: ON" else "AUTO: OFF",
+                                        icon = if (isAutoRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                        color = if (isAutoRunning) Color(0xFF047857) else Color(0xFF64748B),
+                                        onClick = { handleOverlayAutomationToggle() },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("overlay_auto_toggle_btn")
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OverlayMenuButton(
+                                        label = "BET HAND",
+                                        icon = Icons.Default.TouchApp,
+                                        color = Color(0xFF15803D),
+                                        onClick = { toggleCalibrationHand(ShortcutType.BET) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("overlay_bet_hand_btn")
+                                    )
+                                    OverlayMenuButton(
+                                        label = "CASH HAND",
+                                        icon = Icons.Default.TouchApp,
+                                        color = Color(0xFFEA580C),
+                                        onClick = { toggleCalibrationHand(ShortcutType.CASH_OUT) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("overlay_cash_hand_btn")
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OverlayMenuButton(
                                         label = "STRATEGIES",
                                         icon = Icons.Default.Tune,
                                         color = PrimaryCobalt,
                                         onClick = {
                                             removeCompactControlPanel()
-                                            openMainActivity(MainActivity.TAB_STRATEGY)
+                                            showSettingsOverlayPanel(AppRoute.STRATEGIES)
                                         },
                                         modifier = Modifier.weight(1f)
+                                    )
+                                    OverlayMenuButton(
+                                        label = "SETTINGS",
+                                        icon = Icons.Default.Settings,
+                                        color = Color(0xFF475569),
+                                        onClick = {
+                                            removeCompactControlPanel()
+                                            showSettingsOverlayPanel(AppRoute.SETTINGS)
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("overlay_open_settings_btn")
                                     )
                                 }
 
@@ -1195,21 +1306,19 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                         color = Color(0xFF0284C7),
                                         onClick = {
                                             removeCompactControlPanel()
-                                            openMainActivity(MainActivity.TAB_CRASH_HISTORY)
+                                            showSettingsOverlayPanel(AppRoute.CRASH_HISTORY)
                                         },
                                         modifier = Modifier.weight(1f)
                                     )
                                     OverlayMenuButton(
-                                        label = "SETTINGS",
-                                        icon = Icons.Default.Settings,
-                                        color = Color(0xFF475569),
+                                        label = "RISK",
+                                        icon = Icons.Default.Security,
+                                        color = Color(0xFFB45309),
                                         onClick = {
                                             removeCompactControlPanel()
-                                            showSettingsOverlayPanel()
+                                            showSettingsOverlayPanel(AppRoute.RISK_MANAGER)
                                         },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("overlay_open_settings_btn")
+                                        modifier = Modifier.weight(1f)
                                     )
                                 }
 
@@ -1221,7 +1330,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                             color = PrimaryCobalt,
                                             onClick = {
                                                 removeCompactControlPanel()
-                                                openMainActivity(MainActivity.TAB_PATTERNS)
+                                                showSettingsOverlayPanel(AppRoute.PATTERNS)
                                             },
                                             modifier = Modifier.weight(1f)
                                         )
@@ -1231,7 +1340,29 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
                                             color = Color(0xFF0D9488),
                                             onClick = {
                                                 removeCompactControlPanel()
-                                                openMainActivity(MainActivity.TAB_HOURLY_ANALYSIS)
+                                                showSettingsOverlayPanel(AppRoute.HOURLY_ANALYSIS)
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        OverlayMenuButton(
+                                            label = "ALERTS",
+                                            icon = Icons.Default.Notifications,
+                                            color = Color(0xFF7C3AED),
+                                            onClick = {
+                                                removeCompactControlPanel()
+                                                showSettingsOverlayPanel(AppRoute.NOTIFICATIONS)
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OverlayMenuButton(
+                                            label = "FULL APP",
+                                            icon = Icons.Default.OpenInFull,
+                                            color = Color(0xFF334155),
+                                            onClick = {
+                                                removeCompactControlPanel()
+                                                openMainActivity(MainActivity.TAB_HOME)
                                             },
                                             modifier = Modifier.weight(1f)
                                         )
@@ -1317,8 +1448,8 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
     }
 
     private fun handleOverlayStartStop() {
-        val engine = AutomationController.engine ?: return
-        if (engine.automationState.value == AutomationState.RUNNING) {
+        val currentStatus = AutomationController.monitoringStatus.value
+        if (isMonitoringStatusActive(currentStatus)) {
             AutomationController.pauseMonitoringSession()
             statusBannerMessage.value = null
             triggerHapticVibration()
@@ -1338,8 +1469,26 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         }
     }
 
+    private fun handleOverlayAutomationToggle() {
+        val engine = AutomationController.engine ?: return
+        triggerHapticVibration()
+        if (engine.automationState.value == AutomationState.RUNNING) {
+            AutomationController.pauseAutomationAssistant()
+            Toast.makeText(this, "Automation Assistant PAUSED (Monitoring continues)", Toast.LENGTH_SHORT).show()
+        } else {
+            val res = AutomationController.startAutomationAssistant(
+                isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected()
+            )
+            if (!res.started) {
+                statusBannerMessage.value = res.message
+            }
+            Toast.makeText(this, res.message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun performFullApplicationExit() {
         try {
+            floatingHandsManager?.removeAllHands()
             AutomationController.stopMonitoringSession()
             BatteryOptimizationWorker.cancel(applicationContext)
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -1377,14 +1526,31 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         stopSelf()
     }
 
-    private fun showSettingsOverlayPanel() {
+    private fun navigateOverlayRoute(route: AppRoute) {
+        val current = overlayRouteStack.value
+        if (current.lastOrNull() == route) return
+        val next = (current + route).takeLast(12)
+        overlayRouteStack.value = next
+    }
+
+    private fun popOverlayRouteOrClose() {
+        val current = overlayRouteStack.value
+        if (current.size > 1) {
+            overlayRouteStack.value = current.dropLast(1)
+        } else {
+            removeSettingsOverlayPanel()
+        }
+    }
+
+    private fun showSettingsOverlayPanel(initialRoute: AppRoute = AppRoute.SETTINGS) {
+        overlayRouteStack.value = listOf(initialRoute)
         if (isSettingsOverlayVisible) return
 
         val density = resources.displayMetrics.density
         val screenWidthDp = resources.displayMetrics.widthPixels / density
         val screenHeightDp = resources.displayMetrics.heightPixels / density
-        val cardWidthDp = minOf(screenWidthDp * 0.92f, 410f).coerceAtLeast(280f)
-        val cardMaxHeightDp = minOf(screenHeightDp * 0.74f, 620f).coerceAtLeast(320f)
+        val cardWidthDp = minOf(screenWidthDp * 0.94f, 430f).coerceAtLeast(290f)
+        val cardMaxHeightDp = minOf(screenHeightDp * 0.78f, 660f).coerceAtLeast(340f)
 
         val settingsFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
@@ -1399,7 +1565,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = (44 * density).toInt()
+            y = (40 * density).toInt()
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
         settingsOverlayParams = params
@@ -1407,7 +1573,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         val container = DraggableOverlayLayout(
             context = this,
             layoutParams = params,
-            onBackPressed = { removeSettingsOverlayPanel() }
+            onBackPressed = { popOverlayRouteOrClose() }
         )
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -1419,91 +1585,496 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
         val repo = AutomationController.repository
         val automationStateFlow = engine?.automationState ?: MutableStateFlow(AutomationState.IDLE)
         val standbyFlow = engine?.isStandbyOutsideSchedule ?: MutableStateFlow(false)
+        val gameStateFlow = engine?.gameDetection?.gameState ?: MutableStateFlow(GameState())
+        val historyMetadataFlow = engine?.gameDetection?.historyMetadata ?: MutableStateFlow(HistoryCollectionMetadata())
+        val lastRiskViolationFlow = engine?.lastRiskViolation ?: MutableStateFlow<String?>(null)
+        val queuedCountFlow = engine?.queuedOpportunityCount ?: MutableStateFlow(0)
+        val sessionMgr = SessionStateManager(this)
 
         val composeView = ComposeView(this).apply {
             setContent {
                 AutoPredictorTheme(darkTheme = false) {
+                    val routeStack by overlayRouteStack.collectAsState()
+                    val activeRoute = routeStack.lastOrNull() ?: AppRoute.SETTINGS
+
                     val activeConfig by AutomationController.latestConfig.collectAsState()
+                    val activeLimits by AutomationController.latestLimits.collectAsState()
                     val activeNotif by AutomationController.latestNotificationSettings.collectAsState()
+                    val alarmProfiles by AutomationController.alarmProfiles.collectAsState()
+                    val customStrategies by AutomationController.latestCustomStrategies.collectAsState()
+                    val sessionCrashes by AutomationController.activeSessionCrashRecords.collectAsState()
+                    val shortcuts by AutomationController.latestShortcuts.collectAsState()
+                    val selectedGameId by AutomationController.selectedGameId.collectAsState()
+                    val monitoringStatus by AutomationController.monitoringStatus.collectAsState()
+                    val statisticalReport by AutomationController.statisticalReport.collectAsState()
+                    val multiWindowBundle by AutomationController.multiWindowBundle.collectAsState()
+                    val smartAgentExplanation by AutomationController.smartAgentExplanation.collectAsState()
+
                     val automationState by automationStateFlow.collectAsState()
+                    val gameState by gameStateFlow.collectAsState()
+                    val historyMetadata by historyMetadataFlow.collectAsState()
+                    val lastRiskViolation by lastRiskViolationFlow.collectAsState()
+                    val queuedCount by queuedCountFlow.collectAsState()
                     val isStandby by standbyFlow.collectAsState()
                     val isScreenHeld by isScreenHeldState.collectAsState()
                     val isCpuHeld by isCpuActiveState.collectAsState()
                     val awakeError by awakeErrorState.collectAsState()
                     val isAlarmRinging by AlarmAudioController.isAlarmRinging.collectAsState()
                     val activeAlarmTitle by AlarmAudioController.activeAlarmTitle.collectAsState()
+                    val isPixelCaptureActive by ScreenColorSampler.isCaptureActive.collectAsState()
 
-                    OverlaySettingsPanelComposable(
-                        strategyConfig = activeConfig,
-                        notificationSettings = activeNotif,
-                        isStandbyOutsideSchedule = isStandby,
-                        isScreenHeld = isScreenHeld,
-                        isCpuAwakeHeld = isCpuHeld,
-                        awakeError = awakeError,
-                        isMonitoringRunning = automationState == AutomationState.RUNNING,
-                        isAlarmRinging = isAlarmRinging,
-                        activeAlarmTitle = activeAlarmTitle,
-                        initialBubbleOpacity = initialOpacity,
-                        initialBubbleSizeDp = initialSizeDp,
-                        initialHapticsEnabled = initialHaptics,
-                        onStrategyConfigChanged = { updated ->
-                            serviceScope.launch {
-                                runCatching { repo?.saveStrategyConfig(updated) }
-                            }
-                        },
-                        onNotificationSettingsChanged = { updatedNotif ->
-                            serviceScope.launch {
-                                runCatching { repo?.saveNotificationSettings(updatedNotif) }
-                            }
-                        },
-                        onSaveOverlaySettings = { updatedConfig, updatedNotif, newOpacity, newBubbleSizeDp, newHaptics ->
-                            prefs.edit()
-                                .putFloat(PREF_BUBBLE_OPACITY, newOpacity)
-                                .putFloat(PREF_BUBBLE_SIZE_DP, newBubbleSizeDp)
-                                .putBoolean(PREF_HAPTICS_ENABLED, newHaptics)
-                                .apply()
-                            serviceScope.launch {
-                                runCatching { repo?.saveNotificationSettings(updatedNotif) }
-                                runCatching { repo?.saveStrategyConfig(updatedConfig) }
-                            }
-                            refreshFloatingOverlayAppearance()
-                            runCatching {
-                                Toast.makeText(
-                                    this@ScreenEarnerOverlayService,
-                                    "Overlay settings saved",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                            removeSettingsOverlayPanel()
-                        },
-                        onResetSessionStats = {
-                            engine?.resetSessionStats()
-                            runCatching {
-                                Toast.makeText(
-                                    this@ScreenEarnerOverlayService,
-                                    "Session stats reset",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        },
-                        onStopAlarm = { AlarmAudioController.stopAlarm(this@ScreenEarnerOverlayService) },
-                        onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
-                        onTestAlarm = { notif ->
-                            AlarmAudioController.testSignalAlarm(this@ScreenEarnerOverlayService, notif)
-                        },
-                        onBackToMonitorPanel = {
-                            removeSettingsOverlayPanel()
-                            showCompactControlPanel()
-                        },
-                        onExpandFullScreen = {
-                            removeSettingsOverlayPanel()
-                            openMainActivity(MainActivity.TAB_SETTINGS)
-                        },
-                        onClose = { removeSettingsOverlayPanel() },
+                    val allCrashRecords = repo?.crashRecords?.collectAsState(initial = sessionCrashes)?.value ?: sessionCrashes
+                    val crashAudits = repo?.crashCorrectionAudits?.collectAsState(initial = emptyList())?.value ?: emptyList()
+                    val hourlySummaries = repo?.hourlySummaries?.collectAsState(initial = emptyList())?.value ?: emptyList()
+                    val patternOccurrences = repo?.patternOccurrences?.collectAsState(initial = emptyList())?.value ?: emptyList()
+                    val notificationHistory = repo?.notificationHistory?.collectAsState(initial = emptyList())?.value ?: emptyList()
+
+                    var selectedRangePreset by remember { mutableStateOf(HourlyAnalysisEngine.TimeRangePreset.ONE_HOUR) }
+                    var customRangeStartMs by remember { mutableStateOf(System.currentTimeMillis() - 6 * 3_600_000L) }
+                    var customRangeEndMs by remember { mutableStateOf(System.currentTimeMillis()) }
+
+                    val timeRangeMetrics = remember(allCrashRecords, selectedGameId, activeConfig, selectedRangePreset, customRangeStartMs, customRangeEndMs) {
+                        HourlyAnalysisEngine.analyzeTimeRange(
+                            preset = selectedRangePreset,
+                            records = allCrashRecords,
+                            config = activeConfig,
+                            gameId = selectedGameId,
+                            customStartMs = customRangeStartMs,
+                            customEndMs = customRangeEndMs
+                        )
+                    }
+
+                    val betShortcut = shortcuts.firstOrNull { it.type == ShortcutType.BET && it.isCalibrated && it.targetX > 0f }
+                        ?: shortcuts.firstOrNull { it.type == ShortcutType.BET && it.label.contains("HAND", ignoreCase = true) }
+                    val cashOutShortcut = shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT && it.isCalibrated && it.targetX > 0f }
+                        ?: shortcuts.firstOrNull { it.type == ShortcutType.CASH_OUT }
+                    val isMonitorActive = isMonitoringStatusActive(monitoringStatus)
+
+                    Card(
                         modifier = Modifier
                             .width(cardWidthDp.dp)
                             .heightIn(max = cardMaxHeightDp.dp)
-                    )
+                            .shadow(18.dp, RoundedCornerShape(24.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp))
+                            .testTag("unified_overlay_container"),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            if (activeRoute != AppRoute.SETTINGS) {
+                                // Unified Overlay Header with Back, Title, Full Screen Expand, and Close
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (routeStack.size > 1) {
+                                                        popOverlayRouteOrClose()
+                                                    } else {
+                                                        removeSettingsOverlayPanel()
+                                                        showCompactControlPanel()
+                                                    }
+                                                },
+                                                modifier = Modifier.testTag("overlay_container_back_btn")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                                    contentDescription = "Back",
+                                                    tint = PrimaryCobalt,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .background(
+                                                        if (isMonitorActive) ActionStartEmerald else Color(0xFF94A3B8),
+                                                        CircleShape
+                                                    )
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = activeRoute.title.uppercase(Locale.US),
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "Mon: ${monitoringStatus.displayLabel} · Auto: ${automationState.name}",
+                                                    fontSize = 9.sp,
+                                                    color = if (isMonitorActive) ActionStartEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            FilledTonalButton(
+                                                onClick = {
+                                                    val tabIndex = activeRoute.tabIndex
+                                                    removeSettingsOverlayPanel()
+                                                    openMainActivity(tabIndex)
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.testTag("overlay_container_fullscreen_btn")
+                                            ) {
+                                                Icon(Icons.Default.OpenInFull, contentDescription = "Full Screen", modifier = Modifier.size(14.dp), tint = PrimaryCobalt)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Full Screen", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PrimaryCobalt)
+                                            }
+                                            IconButton(
+                                                onClick = { removeSettingsOverlayPanel() },
+                                                modifier = Modifier.testTag("overlay_container_close_btn")
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = "Close Overlay", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalDivider()
+                            }
+
+                            // Unified Overlay Route Chip Switcher Bar (access all modules without leaving the game)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AppRoute.entries.forEach { route ->
+                                    FilterChip(
+                                        selected = activeRoute == route,
+                                        onClick = { navigateOverlayRoute(route) },
+                                        label = {
+                                            Text(
+                                                text = route.shortLabel,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("overlay_route_chip_${route.name}")
+                                    )
+                                }
+                            }
+                            HorizontalDivider()
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f, fill = false)
+                            ) {
+                                when (activeRoute) {
+                                    AppRoute.SETTINGS -> OverlaySettingsPanelComposable(
+                                        strategyConfig = activeConfig,
+                                        notificationSettings = activeNotif,
+                                        isStandbyOutsideSchedule = isStandby,
+                                        isScreenHeld = isScreenHeld,
+                                        isCpuAwakeHeld = isCpuHeld,
+                                        awakeError = awakeError,
+                                        isMonitoringRunning = isMonitorActive,
+                                        isAlarmRinging = isAlarmRinging,
+                                        activeAlarmTitle = activeAlarmTitle,
+                                        initialBubbleOpacity = initialOpacity,
+                                        initialBubbleSizeDp = initialSizeDp,
+                                        initialHapticsEnabled = initialHaptics,
+                                        onStrategyConfigChanged = { updated ->
+                                            serviceScope.launch { runCatching { repo?.saveStrategyConfig(updated) } }
+                                        },
+                                        onNotificationSettingsChanged = { updatedNotif ->
+                                            serviceScope.launch { runCatching { repo?.saveNotificationSettings(updatedNotif) } }
+                                        },
+                                        onSaveOverlaySettings = { updatedConfig, updatedNotif, newOpacity, newBubbleSizeDp, newHaptics ->
+                                            prefs.edit()
+                                                .putFloat(PREF_BUBBLE_OPACITY, newOpacity)
+                                                .putFloat(PREF_BUBBLE_SIZE_DP, newBubbleSizeDp)
+                                                .putBoolean(PREF_HAPTICS_ENABLED, newHaptics)
+                                                .apply()
+                                            serviceScope.launch {
+                                                runCatching { repo?.saveNotificationSettings(updatedNotif) }
+                                                runCatching { repo?.saveStrategyConfig(updatedConfig) }
+                                            }
+                                            refreshFloatingOverlayAppearance()
+                                            runCatching {
+                                                Toast.makeText(
+                                                    this@ScreenEarnerOverlayService,
+                                                    "Overlay settings saved",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                            removeSettingsOverlayPanel()
+                                        },
+                                        onResetSessionStats = {
+                                            engine?.resetSessionStats()
+                                            runCatching {
+                                                Toast.makeText(
+                                                    this@ScreenEarnerOverlayService,
+                                                    "Session stats reset",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        },
+                                        onStopAlarm = { AlarmAudioController.stopAlarm(this@ScreenEarnerOverlayService) },
+                                        onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
+                                        onTestAlarm = { notif ->
+                                            AlarmAudioController.testSignalAlarm(this@ScreenEarnerOverlayService, notif)
+                                        },
+                                        onBackToMonitorPanel = {
+                                            if (routeStack.size > 1) {
+                                                popOverlayRouteOrClose()
+                                            } else {
+                                                removeSettingsOverlayPanel()
+                                                showCompactControlPanel()
+                                            }
+                                        },
+                                        onExpandFullScreen = {
+                                            removeSettingsOverlayPanel()
+                                            openMainActivity(MainActivity.TAB_SETTINGS)
+                                        },
+                                        onClose = { removeSettingsOverlayPanel() },
+                                        onToggleBetHand = { toggleCalibrationHand(ShortcutType.BET) },
+                                        onToggleCashOutHand = { toggleCalibrationHand(ShortcutType.CASH_OUT) }
+                                    )
+
+                                    AppRoute.HOME -> HomeScreen(
+                                        gameState = gameState,
+                                        automationState = automationState,
+                                        isOverlayServiceRunning = isRunning,
+                                        strategyConfig = activeConfig,
+                                        crashRecords = sessionCrashes,
+                                        smartAgentExplanation = smartAgentExplanation,
+                                        isStandbyOutsideSchedule = isStandby,
+                                        onToggleOverlayService = { removeSettingsOverlayPanel() },
+                                        onStartMonitoring = {
+                                            AutomationController.startMonitoringSession(
+                                                isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected()
+                                            )
+                                        },
+                                        onPauseMonitoring = { AutomationController.pauseMonitoringSession() },
+                                        onNavigateToTab = { tab -> navigateOverlayRoute(AppRoute.fromTabIndex(tab)) },
+                                        monitoringStatus = monitoringStatus,
+                                        isAlarmRinging = isAlarmRinging,
+                                        activeAlarmTitle = activeAlarmTitle,
+                                        onStopAlarm = { AlarmAudioController.stopAlarm(this@ScreenEarnerOverlayService) },
+                                        onSnoozeAlarm = { AlarmAudioController.snoozeAlarm(5) },
+                                        onEndSessionAndClearData = { AutomationController.requestEndSessionAndClearSessionData() },
+                                        onToggleAutoBet = { enabled ->
+                                            serviceScope.launch {
+                                                runCatching {
+                                                    repo?.saveStrategyConfig(
+                                                        activeConfig.copy(isAutoBetEnabled = enabled, isAutoCashOutEnabled = enabled)
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        betShortcut = betShortcut,
+                                        cashOutShortcut = cashOutShortcut,
+                                        onToggleBetHand = { toggleCalibrationHand(ShortcutType.BET) },
+                                        onToggleCashOutHand = { toggleCalibrationHand(ShortcutType.CASH_OUT) },
+                                        queuedOpportunitiesCount = queuedCount,
+                                        onStartAutomationAssistant = { AutomationController.startAutomationAssistant() },
+                                        onPauseAutomationAssistant = { AutomationController.pauseAutomationAssistant() },
+                                        onStopAutomationAssistant = { AutomationController.stopAutomationAssistant() }
+                                    )
+
+                                    AppRoute.LIVE_MONITOR -> LiveMonitorScreen(
+                                        gameState = gameState,
+                                        automationState = automationState,
+                                        strategyConfig = activeConfig,
+                                        crashRecords = sessionCrashes,
+                                        historyMetadata = historyMetadata,
+                                        selectedGameId = selectedGameId,
+                                        isPixelCaptureActive = isPixelCaptureActive,
+                                        onSelectGameId = { AutomationController.setSelectedGameId(it) },
+                                        onStartMonitoring = {
+                                            AutomationController.startMonitoringSession(
+                                                isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected()
+                                            )
+                                        },
+                                        onPauseMonitoring = { AutomationController.pauseMonitoringSession() },
+                                        onCollectHistory = { AutomationController.triggerManualHistoryCollection(this@ScreenEarnerOverlayService) },
+                                        onRequestPixelCapture = {
+                                            val tabIdx = AppRoute.LIVE_MONITOR.tabIndex
+                                            removeSettingsOverlayPanel()
+                                            openMainActivity(tabIdx)
+                                        },
+                                        onStopPixelCapture = {
+                                            runCatching { stopService(ScreenCaptureProjectionService.createStopIntent(this@ScreenEarnerOverlayService)) }
+                                        },
+                                        onEndSessionAndClear = { AutomationController.requestEndSessionAndClearSessionData() },
+                                        monitoringStatus = monitoringStatus,
+                                        queuedOpportunitiesCount = queuedCount,
+                                        onStartAutomationAssistant = { AutomationController.startAutomationAssistant() },
+                                        onPauseAutomationAssistant = { AutomationController.pauseAutomationAssistant() },
+                                        onStopAutomationAssistant = { AutomationController.stopAutomationAssistant() },
+                                        onToggleBetHand = { toggleCalibrationHand(ShortcutType.BET) },
+                                        onToggleCashOutHand = { toggleCalibrationHand(ShortcutType.CASH_OUT) }
+                                    )
+
+                                    AppRoute.CRASH_HISTORY -> LogsAnalyticsScreen(
+                                        crashRecords = sessionCrashes,
+                                        crashAudits = crashAudits,
+                                        historyMetadata = historyMetadata,
+                                        strategyConfig = activeConfig,
+                                        selectedGameId = selectedGameId,
+                                        allCrashRecords = allCrashRecords,
+                                        onSelectGameId = { AutomationController.setSelectedGameId(it) },
+                                        onUpdateGridDimensions = { rows, cols ->
+                                            serviceScope.launch {
+                                                runCatching {
+                                                    repo?.saveStrategyConfig(
+                                                        activeConfig.copy(
+                                                            gridRows = rows.coerceIn(4, 5),
+                                                            gridColumns = cols.coerceIn(7, 8)
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onClearCrashHistory = {
+                                            serviceScope.launch { runCatching { repo?.clearAllCrashRecords() } }
+                                        },
+                                        onEndSessionAndClear = { AutomationController.requestEndSessionAndClearSessionData() },
+                                        onCollectHistory = { AutomationController.triggerManualHistoryCollection(this@ScreenEarnerOverlayService) },
+                                        onCountClearScopeRecords = { scope, gId ->
+                                            AutomationController.countClearScopeRecords(scope, gId)
+                                        },
+                                        onClearHistoryByScope = { scope, gId ->
+                                            serviceScope.launch {
+                                                runCatching { AutomationController.clearHistoryByScope(scope, gId) }
+                                            }
+                                        }
+                                    )
+
+                                    AppRoute.PATTERNS -> PatternRecognitionScreen(
+                                        report = statisticalReport,
+                                        agentExplanation = smartAgentExplanation,
+                                        selectedGameId = selectedGameId,
+                                        onSelectGameId = { AutomationController.setSelectedGameId(it) }
+                                    )
+
+                                    AppRoute.STRATEGIES -> StrategyScreen(
+                                        currentConfig = activeConfig,
+                                        customStrategies = customStrategies,
+                                        patternOccurrences = patternOccurrences,
+                                        onSaveCustomStrategy = { strat ->
+                                            serviceScope.launch {
+                                                runCatching {
+                                                    if (strat.id == 0L) {
+                                                        repo?.insertCustomStrategy(strat)
+                                                    } else {
+                                                        repo?.updateCustomStrategy(strat)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onToggleCustomStrategyEnabled = { strat, enabled ->
+                                            serviceScope.launch {
+                                                runCatching { repo?.updateCustomStrategy(strat.copy(isEnabled = enabled)) }
+                                            }
+                                        },
+                                        onToggleCustomStrategyNotifications = { strat, enabled ->
+                                            serviceScope.launch {
+                                                runCatching { repo?.updateCustomStrategy(strat.copy(notificationEnabled = enabled)) }
+                                            }
+                                        },
+                                        onDeleteCustomStrategy = { id ->
+                                            serviceScope.launch { runCatching { repo?.deleteCustomStrategy(id) } }
+                                        },
+                                        onReorderStrategies = { first, second ->
+                                            serviceScope.launch { runCatching { repo?.swapStrategyOrder(first, second) } }
+                                        },
+                                        onSaveConfig = { updatedConfig ->
+                                            serviceScope.launch {
+                                                runCatching { repo?.saveStrategyConfig(updatedConfig) }
+                                            }
+                                            Toast.makeText(this@ScreenEarnerOverlayService, "Strategy settings saved", Toast.LENGTH_SHORT).show()
+                                            popOverlayRouteOrClose()
+                                        }
+                                    )
+
+                                    AppRoute.HOURLY_ANALYSIS -> HourlyAnalysisScreen(
+                                        bundle = multiWindowBundle,
+                                        archivedSummaries = hourlySummaries,
+                                        selectedGameId = selectedGameId,
+                                        onSelectGameId = { AutomationController.setSelectedGameId(it) },
+                                        selectedTimeRangePreset = selectedRangePreset,
+                                        timeRangeMetrics = timeRangeMetrics,
+                                        onSelectTimeRangePreset = { preset, startMs, endMs ->
+                                            selectedRangePreset = preset
+                                            customRangeStartMs = startMs
+                                            customRangeEndMs = endMs
+                                        }
+                                    )
+
+                                    AppRoute.NOTIFICATIONS -> NotificationCenterScreen(
+                                        notificationSettings = activeNotif,
+                                        notificationHistory = notificationHistory,
+                                        onUpdateSettings = { updated ->
+                                            serviceScope.launch { runCatching { repo?.saveNotificationSettings(updated) } }
+                                        },
+                                        onClearHistory = {
+                                            serviceScope.launch { runCatching { repo?.clearNotificationHistory() } }
+                                        },
+                                        onOpenRecordTarget = { record ->
+                                            if (record.id > 0L) {
+                                                serviceScope.launch {
+                                                    runCatching { repo?.updateNotificationInteraction(record.id, NotificationInteractionStatus.OPENED_BY_USER) }
+                                                }
+                                            }
+                                            if (record.gameId.isNotBlank()) {
+                                                AutomationController.setSelectedGameId(record.gameId)
+                                            }
+                                            val dest = if (record.channelId == AndroidSystemNotificationDispatcher.CHANNEL_HOURLY_ANALYSIS) {
+                                                AppRoute.HOURLY_ANALYSIS
+                                            } else {
+                                                AppRoute.PATTERNS
+                                            }
+                                            navigateOverlayRoute(dest)
+                                        }
+                                    )
+
+                                    AppRoute.RISK_MANAGER -> RiskManagerScreen(
+                                        currentLimits = activeLimits,
+                                        lastViolation = lastRiskViolation,
+                                        onSaveLimits = { updatedLimits ->
+                                            serviceScope.launch { runCatching { repo?.saveRiskLimits(updatedLimits) } }
+                                            Toast.makeText(this@ScreenEarnerOverlayService, "Safety Locks Saved", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onTriggerEmergencyStop = {
+                                            serviceScope.launch {
+                                                runCatching { repo?.saveRiskLimits(activeLimits.copy(emergencyStop = true)) }
+                                            }
+                                            engine?.triggerEmergencyStop("Manual Risk Lock triggered in overlay")
+                                        },
+                                        onClearEmergencyStop = {
+                                            serviceScope.launch {
+                                                runCatching { repo?.saveRiskLimits(activeLimits.copy(emergencyStop = false)) }
+                                            }
+                                            engine?.clearEmergencyStop()
+                                        },
+                                        currentDailyLoss = sessionMgr.getDailyLoss()
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1515,7 +2086,7 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
             windowManager?.addView(container, params)
             isSettingsOverlayVisible = true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed adding overlay settings panel", e)
+            Log.e(TAG, "Failed adding unified overlay container", e)
             settingsOverlayView = null
             settingsOverlayParams = null
             isSettingsOverlayVisible = false
@@ -1625,12 +2196,22 @@ open class ScreenEarnerOverlayService : Service(), LifecycleOwner, ViewModelStor
 
     override fun onDestroy() {
         super.onDestroy()
+        floatingHandsManager?.removeAllHands()
         AccessibilityController.gestureOverlayPassThroughListener = null
         _isScreenHeldState.value = false
         AutomationController.engine?.gameDetection?.updateScreenAwakeState(false, false)
         releaseWakeLockSafely()
         serviceScope.cancel()
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        val currentState = lifecycleRegistry.currentState
+        if (currentState.isAtLeast(Lifecycle.State.CREATED)) {
+            if (currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+            }
+            if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+            }
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        }
         isRunning = false
         removeAllOverlayViews()
         runCatching {
@@ -1659,19 +2240,24 @@ fun FloatingSessionStatsHudComposable(
     liveMultiplier: Double = 0.0,
     liveDetectionLost: Boolean = false,
     latestCrashMultiplier: Double? = null,
-    latestRoundId: String? = null
+    latestRoundId: String? = null,
+    monitoringStatus: MonitoringStatus = MonitoringStatus.STOPPED
 ) {
     val currency by com.example.data.engine.CurrencyManager.activeCurrency.collectAsState()
     val isHaltedByLimit = !stats.limitHaltReason.isNullOrBlank()
+    val isMonitorLive = monitoringStatus == MonitoringStatus.MONITORING ||
+        monitoringStatus == MonitoringStatus.WAITING_FOR_GAME ||
+        monitoringStatus == MonitoringStatus.GAME_NOT_ACCESSIBLE ||
+        monitoringStatus == MonitoringStatus.GAME_SUSPENDED
     val borderColor = when {
         isHaltedByLimit || liveDetectionLost -> ActionStopRed
-        automationState == AutomationState.RUNNING -> ActionStartEmerald
+        isMonitorLive || automationState == AutomationState.RUNNING -> ActionStartEmerald
         automationState == AutomationState.PAUSED -> ActionCashOutAmber
         else -> PrimaryCobalt.copy(alpha = 0.7f)
     }
     val statusDotColor = when {
         isHaltedByLimit || liveDetectionLost -> ActionStopRed
-        automationState == AutomationState.RUNNING -> ActionStartEmerald
+        isMonitorLive || automationState == AutomationState.RUNNING -> ActionStartEmerald
         automationState == AutomationState.PAUSED -> ActionCashOutAmber
         else -> PrimaryCobalt
     }

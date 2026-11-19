@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import com.example.data.model.MonitoringStatus
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 data class PersistedRibbonBaselineItem(
@@ -47,6 +50,9 @@ class SessionStateManager(context: Context) {
         private const val KEY_PANEL_X = "overlay_panel_x"
         private const val KEY_PANEL_Y = "overlay_panel_y"
         private const val KEY_PANEL_HAS_POS = "overlay_panel_has_pos"
+        private const val KEY_DAILY_LOSS_DATE = "daily_loss_date_key"
+        private const val KEY_DAILY_LOSS_AMOUNT = "daily_loss_amount"
+        private const val KEY_AUTOMATION_ENABLED = "automation_assistant_enabled"
     }
 
     private val prefs: SharedPreferences =
@@ -98,6 +104,51 @@ class SessionStateManager(context: Context) {
                 status == MonitoringStatus.MONITORING || status == MonitoringStatus.WAITING_FOR_GAME
             )
             .commit()
+    }
+
+    fun isAutomationEnabled(): Boolean = prefs.getBoolean(KEY_AUTOMATION_ENABLED, false)
+
+    fun setAutomationEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTOMATION_ENABLED, enabled).commit()
+    }
+
+    private fun dateKeyFor(nowMs: Long): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        return sdf.format(Date(nowMs))
+    }
+
+    fun getDailyLoss(nowMs: Long = System.currentTimeMillis()): Double {
+        val todayKey = dateKeyFor(nowMs)
+        val storedDate = prefs.getString(KEY_DAILY_LOSS_DATE, null)
+        if (storedDate != todayKey) {
+            prefs.edit()
+                .putString(KEY_DAILY_LOSS_DATE, todayKey)
+                .putFloat(KEY_DAILY_LOSS_AMOUNT, 0f)
+                .apply()
+            return 0.0
+        }
+        return prefs.getFloat(KEY_DAILY_LOSS_AMOUNT, 0f).toDouble().coerceAtLeast(0.0)
+    }
+
+    fun recordDailyNetOutcome(netProfit: Double, nowMs: Long = System.currentTimeMillis()): Double {
+        val current = getDailyLoss(nowMs)
+        val updated = if (netProfit < 0.0) {
+            current + (-netProfit)
+        } else {
+            (current - netProfit).coerceAtLeast(0.0)
+        }
+        prefs.edit()
+            .putString(KEY_DAILY_LOSS_DATE, dateKeyFor(nowMs))
+            .putFloat(KEY_DAILY_LOSS_AMOUNT, updated.toFloat())
+            .apply()
+        return updated
+    }
+
+    fun resetDailyLoss(nowMs: Long = System.currentTimeMillis()) {
+        prefs.edit()
+            .putString(KEY_DAILY_LOSS_DATE, dateKeyFor(nowMs))
+            .putFloat(KEY_DAILY_LOSS_AMOUNT, 0f)
+            .apply()
     }
 
     fun ensureActiveSession(nowMs: Long = System.currentTimeMillis(), gameId: String = "unknown"): String {

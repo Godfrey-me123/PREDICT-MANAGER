@@ -408,13 +408,18 @@ class StrategyEngine {
     fun activateExternalPatternTrigger(
         strategyName: String,
         config: StrategyConfig = _boundConfig.value,
-        currentTimeMs: Long = System.currentTimeMillis()
+        currentTimeMs: Long = System.currentTimeMillis(),
+        progressionModeOverride: StakeProgressionMode? = null,
+        customAddAmountOverride: Double? = null,
+        targetWinsOverride: Int? = null,
+        targetMultiplierOverride: Double? = null
     ): Boolean {
         if (state.isBettingSessionActive) return false
         val firstEnabledRule = config.getRuleConfigs().firstOrNull { it.isEnabled }
-        val mode = firstEnabledRule?.progressionMode ?: state.activeProgressionMode
-        val addAmt = firstEnabledRule?.customAddAmount ?: state.activeCustomAddAmount
-        val targetWins = firstEnabledRule?.targetWinsToFetch ?: config.stopAfterConsecutiveWins.coerceAtLeast(1)
+        val mode = progressionModeOverride ?: firstEnabledRule?.progressionMode ?: state.activeProgressionMode
+        val addAmt = customAddAmountOverride ?: firstEnabledRule?.customAddAmount ?: state.activeCustomAddAmount
+        val targetWins = (targetWinsOverride ?: firstEnabledRule?.targetWinsToFetch ?: config.stopAfterConsecutiveWins).coerceAtLeast(1)
+        val effectiveTargetMult = (targetMultiplierOverride ?: config.targetMultiplier).coerceAtLeast(1.01)
         val initialStake = roundStake(config.baseStake)
         val timeoutLimitMs = config.sessionTimeoutMinutes.coerceAtLeast(1) * 60_000L
 
@@ -437,7 +442,7 @@ class StrategyEngine {
             stake = initialStake,
             mode = mode,
             addAmount = addAmt,
-            targetMultiplier = config.targetMultiplier,
+            targetMultiplier = effectiveTargetMult,
             stakeLevel = 1,
             isSessionActive = true,
             reason = "$strategyName Triggered"

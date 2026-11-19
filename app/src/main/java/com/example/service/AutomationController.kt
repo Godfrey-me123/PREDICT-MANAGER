@@ -41,6 +41,7 @@ import com.example.data.model.RiskLimits
 import com.example.data.model.StrategyConfig
 import com.example.data.model.StrategyNotificationType
 import com.example.data.model.TimestampSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -219,6 +220,12 @@ object AutomationController {
     }
 
     private fun attachEngineCallbacks(targetEngine: AutomationEngine) {
+        targetEngine.currentDailyLossProvider = { nowMs ->
+            sessionStateManager?.getDailyLoss(nowMs) ?: 0.0
+        }
+        targetEngine.onDailyNetOutcomeRecorded = { netProfit, nowMs ->
+            sessionStateManager?.recordDailyNetOutcome(netProfit, nowMs) ?: 0.0
+        }
         targetEngine.onExecutionNotification = { type, title, message, occurrenceKey, _ ->
             controllerScope.launch {
                 notificationManager?.dispatchSystemNotice(
@@ -356,11 +363,13 @@ object AutomationController {
         }
 
         // If resuming from PAUSED within an active session, preserve session ID, baseline, and crashes!
-        if (currentEngine.automationState.value == com.example.data.engine.AutomationState.PAUSED &&
+        if (_monitoringStatus.value == MonitoringStatus.PAUSED &&
             _activeSessionId.value.isNotBlank()
         ) {
             sessionStateManager?.setIntendedMonitoringActive(true)
-            currentEngine.resumeAutomation(cfg, lim)
+            if (sessionStateManager?.isAutomationEnabled() != false && !lim.emergencyStop) {
+                currentEngine.resumeAutomation(cfg, lim)
+            }
             val currentCount = _activeSessionCrashRecords.value.size
             val nextStatus = if (!currentEngine.gameDetection.gameState.value.isDetected) {
                 MonitoringPipelineStatus.WAITING_FOR_GAME
@@ -430,10 +439,8 @@ object AutomationController {
 
     fun startNewOrResumeMonitoring(context: Context): String {
         ensureInitialized(context)
-        val currentEngine = engine
         val existingSid = _activeSessionId.value
-        val isPaused = currentEngine?.automationState?.value == com.example.data.engine.AutomationState.PAUSED ||
-            _monitoringStatus.value == MonitoringStatus.PAUSED
+        val isPaused = _monitoringStatus.value == MonitoringStatus.PAUSED
         if (isPaused && existingSid.isNotBlank()) {
             val res = startMonitoringSession(isAccessibilityConnected = true)
             if (!res.started) {
@@ -495,6 +502,39 @@ object AutomationController {
             runCatching { repository?.closeActiveMonitoringSessions(System.currentTimeMillis()) }
         }
         recomputeAnalytics()
+    }
+
+    // Independent Automation Assistant controls (never pause/stop Monitoring Engine)
+    fun startAutomationAssistant(
+        isAccessibilityConnected: Boolean = ScreenEarnerAccessibilityService.isServiceConnected()
+    ): StartAutomationResult {
+        val currentEngine = engine ?: return StartAutomationResult(false, "Engine not initialized")
+        val cfg = _latestConfig.value
+        val lim = _latestLimits.value
+        val result = if (currentEngine.automationState.value == com.example.data.engine.AutomationState.PAUSED) {
+            currentEngine.resumeAutomation(cfg, lim)
+            if (currentEngine.automationState.value == com.example.data.engine.AutomationState.RUNNING) {
+                StartAutomationResult(true, "Automation Assistant resumed.")
+            } else {
+                StartAutomationResult(false, currentEngine.lastRiskViolation.value ?: "Automation blocked by risk limits.")
+            }
+        } else {
+            currentEngine.startAutomationWithValidation(cfg, lim, isAccessibilityConnected)
+        }
+        if (result.started) {
+            sessionStateManager?.setAutomationEnabled(true)
+        }
+        return result
+    }
+
+    fun pauseAutomationAssistant() {
+        sessionStateManager?.setAutomationEnabled(false)
+        engine?.pauseAutomation()
+    }
+
+    fun stopAutomationAssistant() {
+        sessionStateManager?.setAutomationEnabled(false)
+        engine?.quitAutomation()
     }
 
     suspend fun endSessionAndClearSessionData() {
@@ -562,10 +602,11 @@ object AutomationController {
             if (status == MonitoringStatus.MONITORING &&
                 isA11yConnected &&
                 detection.isGameDetected &&
-                currentEngine != null &&
-                currentEngine.automationState.value == com.example.data.engine.AutomationState.RUNNING
+                currentEngine != null
             ) {
                 val cfg = _latestConfig.value
+                val autoRunning = currentEngine.automationState.value == com.example.data.engine.AutomationState.RUNNING &&
+                    cfg.automationMasterEnabled
                 val effectiveMult = if (detection.gamePhase == "IN_FLIGHT") {
                     detection.detectedMultiplier ?: 0.0
                 } else {
@@ -579,7 +620,7 @@ object AutomationController {
                     limits = _latestLimits.value,
                     currentTimeMs = nowMs,
                     siteButtonState = detection.uiTargets.siteButtonState,
-                    observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
+                    observationOnly = !autoRunning || (!cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled)
                 )
             }
         }
@@ -931,13 +972,17 @@ object AutomationController {
         }
 
         loopScope.launch {
-            AccessibilityController.diagnosticMessage
-                .catch { e -> Log.w(TAG, "diagnosticMessage loop stopped: ${e.message}") }
-                .collect { msg ->
-                    if (!msg.isNullOrBlank()) {
-                        engine?.publishStatusTicker(msg)
+            try {
+                AccessibilityController.diagnosticMessage
+                    .collect { msg ->
+                        if (!msg.isNullOrBlank()) {
+                            engine?.publishStatusTicker(msg)
+                        }
                     }
-                }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "diagnosticMessage loop stopped: ${e.message}")
+            }
         }
 
         loopScope.launch {
@@ -1005,21 +1050,25 @@ object AutomationController {
 
         observerJob = loopScope.launch {
             var isFirstEmission = true
-            ScreenEarnerAccessibilityService.detectionState
-                .catch { e -> Log.w(TAG, "detectionState loop stopped: ${e.message}") }
-                .collect { detection ->
-                    if (isFirstEmission) {
-                        isFirstEmission = false
-                        if (!ScreenEarnerAccessibilityService.isServiceConnected() && !detection.isGameDetected) {
-                            return@collect
+            try {
+                ScreenEarnerAccessibilityService.detectionState
+                    .collect { detection ->
+                        if (isFirstEmission) {
+                            isFirstEmission = false
+                            if (!ScreenEarnerAccessibilityService.isServiceConnected() && !detection.isGameDetected) {
+                                return@collect
+                            }
                         }
+                        processDetectionEvent(
+                            detection = detection,
+                            isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected(),
+                            nowMs = detection.updatedAtMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+                        )
                     }
-                    processDetectionEvent(
-                        detection = detection,
-                        isAccessibilityConnected = ScreenEarnerAccessibilityService.isServiceConnected(),
-                        nowMs = detection.updatedAtMs.takeIf { it > 0L } ?: System.currentTimeMillis()
-                    )
-                }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "detectionState loop stopped: ${e.message}")
+            }
         }
 
         tickerJob = loopScope.launch {
@@ -1088,7 +1137,12 @@ object AutomationController {
                         occurrenceRecordId = occIds[ev.occurrenceKey]
                     )
                     if (ev.notificationType == StrategyNotificationType.STRATEGY_REACHED) {
-                        activateCustomPatternBetSession(ev.strategy.name, cfg, nowMs)
+                        activateCustomPatternBetSession(
+                            strategy = ev.strategy,
+                            occurrenceKey = ev.occurrenceKey,
+                            config = cfg,
+                            nowMs = nowMs
+                        )
                     }
                 }
             }
@@ -1097,21 +1151,47 @@ object AutomationController {
 
     private fun activateCustomPatternBetSession(strategyName: String, config: StrategyConfig, nowMs: Long) {
         val currentEngine = engine ?: return
-        if (!config.isAutoBetEnabled) return
+        if (!config.isAutoBetEnabled || !config.automationMasterEnabled) return
         if (_monitoringStatus.value != MonitoringStatus.MONITORING) return
         if (currentEngine.automationState.value != com.example.data.engine.AutomationState.RUNNING) return
-        val activated = currentEngine.strategyEngine.activateExternalPatternTrigger(
+        val opp = com.example.data.engine.PendingBetOpportunity(
+            id = "opp_${nowMs}_${strategyName.hashCode()}",
+            strategyId = 0L,
             strategyName = strategyName,
-            config = config,
-            currentTimeMs = nowMs
+            targetGameId = "ALL",
+            occurrenceKey = "legacy_${strategyName.hashCode()}_${nowMs}",
+            createdAtMs = nowMs,
+            expiresAtMs = nowMs + maxOf(config.bettingWindowExpiryMs, 45_000L)
         )
-        if (activated) {
-            currentEngine.gameDetection.updateStrategyTelemetry(
-                currentEngine.strategyEngine.getState(),
-                "Pattern Triggered: $strategyName"
-            )
-            currentEngine.notifyStrategyWaitingToBet(strategyName)
-        }
+        currentEngine.enqueueCustomStrategyOpportunity(opp, config, nowMs)
+    }
+
+    private fun activateCustomPatternBetSession(
+        strategy: CustomPatternStrategy,
+        occurrenceKey: String,
+        config: StrategyConfig,
+        nowMs: Long
+    ) {
+        val currentEngine = engine ?: return
+        if (!config.isAutoBetEnabled || !config.automationMasterEnabled) return
+        if (_monitoringStatus.value != MonitoringStatus.MONITORING) return
+        if (currentEngine.automationState.value != com.example.data.engine.AutomationState.RUNNING) return
+        val opp = com.example.data.engine.PendingBetOpportunity(
+            id = "opp_${strategy.id}_${nowMs}",
+            strategyId = strategy.id,
+            strategyName = strategy.name,
+            targetGameId = strategy.targetGameId.ifBlank { "ALL" },
+            occurrenceKey = occurrenceKey,
+            createdAtMs = nowMs,
+            expiresAtMs = nowMs + maxOf(config.bettingWindowExpiryMs, 45_000L),
+            targetWinsToFetch = config.stopAfterConsecutiveWins.coerceAtLeast(1),
+            priorityScore = when (strategy.strategyGroup) {
+                com.example.data.model.StrategyGroup.MULTIPLIER_INTERVAL -> 10
+                com.example.data.model.StrategyGroup.COLOR_SEQUENCE -> 8
+                com.example.data.model.StrategyGroup.TIME_INTERVAL -> 5
+            }
+        )
+        currentEngine.enqueueCustomStrategyOpportunity(opp, config, nowMs)
     }
 
     /**
@@ -1143,12 +1223,21 @@ object AutomationController {
                     currentEngine.updateActivePlatform(detection.platformName)
                 }
 
-                if (detection.isGameDetected && detection.gameId.isNotBlank()) {
-                    if (_selectedGameId.value != detection.gameId) {
-                        _selectedGameId.value = detection.gameId
+                val effectiveGameId = when {
+                    !cfg.autoGameRecognitionEnabled && cfg.preferredGameId != "ALL" -> cfg.preferredGameId
+                    else -> detection.gameId
+                }
+                val lowConfidenceFiltered = detection.isGameDetected &&
+                    detection.detectionConfidence > 0f &&
+                    cfg.minDetectionConfidence > 0f &&
+                    detection.detectionConfidence < cfg.minDetectionConfidence
+
+                if (detection.isGameDetected && effectiveGameId.isNotBlank() && !lowConfidenceFiltered) {
+                    if (_selectedGameId.value != effectiveGameId) {
+                        _selectedGameId.value = effectiveGameId
                     }
-                    if (lastDetectedGameIdForNotice != detection.gameId) {
-                        lastDetectedGameIdForNotice = detection.gameId
+                    if (lastDetectedGameIdForNotice != effectiveGameId) {
+                        lastDetectedGameIdForNotice = effectiveGameId
                         val settings = _latestNotificationSettings.value
                         controllerScope.launch {
                             notificationManager?.dispatchSystemNotice(
@@ -1156,9 +1245,9 @@ object AutomationController {
                                 type = StrategyNotificationType.GAME_DETECTED,
                                 title = "Game Detected: ${detection.displayedGameName}",
                                 message = "Monitoring ${detection.displayedGameName} on ${detection.platformName}.",
-                                occurrenceKey = "game_${detection.gameId}_${detection.foregroundPackage}",
+                                occurrenceKey = "game_${effectiveGameId}_${detection.foregroundPackage}",
                                 settings = settings,
-                                gameId = detection.gameId
+                                gameId = effectiveGameId
                             )
                         }
                     }
@@ -1209,8 +1298,14 @@ object AutomationController {
                 }
                 lastObservedPhaseForExecution = detection.gamePhase
 
-                if (autoState == com.example.data.engine.AutomationState.PAUSED) {
-                    _monitoringStatus.value = MonitoringStatus.PAUSED
+                var currentMonitoringStatus = _monitoringStatus.value
+                if (currentMonitoringStatus == MonitoringStatus.PERMISSION_REQUIRED &&
+                    (sid.isBlank() || sessionStateManager?.isIntendedMonitoringActive() != true)
+                ) {
+                    currentMonitoringStatus = MonitoringStatus.STOPPED
+                    _monitoringStatus.value = MonitoringStatus.STOPPED
+                }
+                if (currentMonitoringStatus == MonitoringStatus.PAUSED) {
                     currentEngine.gameDetection.updatePipelineStatus(
                         pipelineStatus = MonitoringPipelineStatus.PAUSED,
                         reason = "Monitoring paused — $sessionCrashCount crash(es) preserved in current session",
@@ -1221,10 +1316,7 @@ object AutomationController {
                     return@withLock
                 }
 
-                if (autoState == com.example.data.engine.AutomationState.IDLE ||
-                    autoState == com.example.data.engine.AutomationState.EMERGENCY_STOP
-                ) {
-                    _monitoringStatus.value = MonitoringStatus.STOPPED
+                if (currentMonitoringStatus == MonitoringStatus.STOPPED) {
                     currentEngine.gameDetection.updatePipelineStatus(
                         pipelineStatus = MonitoringPipelineStatus.STOPPED,
                         reason = "Monitoring stopped",
@@ -1302,6 +1394,8 @@ object AutomationController {
                         detection.detectedMultiplier
                             ?: currentEngine.gameDetection.gameState.value.currentMultiplier
                     }
+                    val autoRunning = autoState == com.example.data.engine.AutomationState.RUNNING &&
+                        cfg.automationMasterEnabled
                     currentEngine.handlePhaseUpdate(
                         phase = detection.gamePhase,
                         liveMultiplier = liveMultNoRibbon,
@@ -1309,7 +1403,7 @@ object AutomationController {
                         limits = _latestLimits.value,
                         currentTimeMs = nowMs,
                         siteButtonState = targets.siteButtonState,
-                        observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
+                        observationOnly = !autoRunning || (!cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled)
                     )
                     CurrencyManager.updateFromConfigAndGameState(cfg, currentEngine.gameDetection.gameState.value)
                     currentEngine.updateLiveDiagnostics(targets, currentEngine.gameDetection.gameState.value, cfg)
@@ -1353,7 +1447,11 @@ object AutomationController {
                         reason = "Baseline captured (${ribbonItems.size} visible); 0 historical rows imported.",
                         nowMs = nowMs
                     )
-                } else if (alignment.newCompletedItems.isNotEmpty() && !currentEngine.isStandbyOutsideSchedule.value) {
+                } else if (alignment.newCompletedItems.isNotEmpty() &&
+                    cfg.historyCollectionEnabled &&
+                    !lowConfidenceFiltered &&
+                    !currentEngine.isStandbyOutsideSchedule.value
+                ) {
                     var insertedAny = false
                     val orderedOldestToNewest = alignment.newCompletedItems.asReversed()
                     orderedOldestToNewest.forEachIndexed { revIdx, item ->
@@ -1482,6 +1580,8 @@ object AutomationController {
                     detection.detectedMultiplier
                         ?: currentEngine.gameDetection.gameState.value.currentMultiplier
                 }
+                val autoRunning = autoState == com.example.data.engine.AutomationState.RUNNING &&
+                    cfg.automationMasterEnabled
                 currentEngine.handlePhaseUpdate(
                     phase = detection.gamePhase,
                     liveMultiplier = liveMult,
@@ -1489,7 +1589,7 @@ object AutomationController {
                     limits = _latestLimits.value,
                     currentTimeMs = nowMs,
                     siteButtonState = targets.siteButtonState,
-                    observationOnly = !cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled
+                    observationOnly = !autoRunning || (!cfg.isAutoBetEnabled && !cfg.isAutoCashOutEnabled)
                 )
 
                 CurrencyManager.updateFromConfigAndGameState(cfg, currentEngine.gameDetection.gameState.value)
@@ -1622,7 +1722,12 @@ object AutomationController {
                             occurrenceRecordId = occId
                         )
                         if (event.notificationType == StrategyNotificationType.STRATEGY_REACHED) {
-                            activateCustomPatternBetSession(event.strategy.name, cfg, nowMs)
+                            activateCustomPatternBetSession(
+                                strategy = event.strategy,
+                                occurrenceKey = event.occurrenceKey,
+                                config = cfg,
+                                nowMs = nowMs
+                            )
                         }
                     }
                 }
@@ -1652,7 +1757,12 @@ object AutomationController {
                         batch.events.forEach { event ->
                             mgr?.dispatchPatternAlert(event, settings, nowMs)
                             if (event.notificationType == StrategyNotificationType.STRATEGY_REACHED) {
-                                activateCustomPatternBetSession(event.strategy.name, cfg, nowMs)
+                                activateCustomPatternBetSession(
+                                    strategy = event.strategy,
+                                    occurrenceKey = event.occurrenceKey,
+                                    config = cfg,
+                                    nowMs = nowMs
+                                )
                             }
                         }
                     }

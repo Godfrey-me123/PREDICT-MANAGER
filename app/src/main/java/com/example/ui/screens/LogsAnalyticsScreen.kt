@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -152,6 +154,10 @@ fun LogsAnalyticsScreen(
         }
     }
 
+    val isOverlayHost = LocalActivityResultRegistryOwner.current == null
+    val hasBackOwner = LocalOnBackPressedDispatcherOwner.current != null
+
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -416,84 +422,123 @@ fun LogsAnalyticsScreen(
     }
 
     if (showClearScopeDialog) {
-        BackHandler { showClearScopeDialog = false }
-        AlertDialog(
-            onDismissRequest = { showClearScopeDialog = false },
-            title = { Text("Clear Local History", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Choose which records to delete cleanly from local Room storage:",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    listOf(
-                        ClearHistoryScope.CURRENT_SESSION to "Current Session Only (resets session count to 0)",
-                        ClearHistoryScope.SELECTED_GAME_ARCHIVED to "Archived History for Selected Game (${if (selectedGameId == "ALL") "unknown" else selectedGameId})",
-                        ClearHistoryScope.ALL_HISTORY to "All History (all sessions, stats, & hourly summaries)"
-                    ).forEach { (scopeOpt, desc) ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (pendingClearScope == scopeOpt) PrimaryCobalt.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (pendingClearScope == scopeOpt) PrimaryCobalt else MaterialTheme.colorScheme.outlineVariant
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { pendingClearScope = scopeOpt }
-                                .testTag("clear_scope_option_${scopeOpt.name}")
-                        ) {
-                            Text(
-                                text = desc,
-                                fontSize = 12.sp,
-                                fontWeight = if (pendingClearScope == scopeOpt) FontWeight.Bold else FontWeight.Normal,
-                                modifier = Modifier.padding(10.dp)
-                            )
-                        }
-                    }
+        if (hasBackOwner) {
+            BackHandler { showClearScopeDialog = false }
+        }
+        val clearScopeBody: @Composable () -> Unit = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Choose which records to delete cleanly from local Room storage:",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                listOf(
+                    ClearHistoryScope.CURRENT_SESSION to "Current Session Only (resets session count to 0)",
+                    ClearHistoryScope.SELECTED_GAME_ARCHIVED to "Archived History for Selected Game (${if (selectedGameId == "ALL") "unknown" else selectedGameId})",
+                    ClearHistoryScope.ALL_HISTORY to "All History (all sessions, stats, & hourly summaries)"
+                ).forEach { (scopeOpt, desc) ->
                     Surface(
-                        color = Color(0xFFFEE2E2),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (pendingClearScope == scopeOpt) PrimaryCobalt.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (pendingClearScope == scopeOpt) PrimaryCobalt else MaterialTheme.colorScheme.outlineVariant
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { pendingClearScope = scopeOpt }
+                            .testTag("clear_scope_option_${scopeOpt.name}")
                     ) {
                         Text(
-                            text = "Records to delete: $previewDeleteCount crash record(s)",
+                            text = desc,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = ActionStopRed,
-                            modifier = Modifier
-                                .padding(10.dp)
-                                .testTag("clear_scope_preview_count")
+                            fontWeight = if (pendingClearScope == scopeOpt) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.padding(10.dp)
                         )
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showClearScopeDialog = false
-                        if (onClearHistoryByScope != null) {
-                            onClearHistoryByScope(pendingClearScope, selectedGameId)
-                        } else {
-                            when (pendingClearScope) {
-                                ClearHistoryScope.CURRENT_SESSION -> onEndSessionAndClear()
-                                ClearHistoryScope.SELECTED_GAME_ARCHIVED,
-                                ClearHistoryScope.ALL_HISTORY -> onClearCrashHistory()
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
-                    modifier = Modifier.testTag("confirm_clear_scope_btn")
+                Surface(
+                    color = Color(0xFFFEE2E2),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("DELETE ($previewDeleteCount)", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearScopeDialog = false }) {
-                    Text("CANCEL")
+                    Text(
+                        text = "Records to delete: $previewDeleteCount crash record(s)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ActionStopRed,
+                        modifier = Modifier
+                            .padding(10.dp)
+                            .testTag("clear_scope_preview_count")
+                    )
                 }
             }
-        )
+        }
+        val onConfirmClearScope = {
+            showClearScopeDialog = false
+            if (onClearHistoryByScope != null) {
+                onClearHistoryByScope(pendingClearScope, selectedGameId)
+            } else {
+                when (pendingClearScope) {
+                    ClearHistoryScope.CURRENT_SESSION -> onEndSessionAndClear()
+                    ClearHistoryScope.SELECTED_GAME_ARCHIVED,
+                    ClearHistoryScope.ALL_HISTORY -> onClearCrashHistory()
+                }
+            }
+        }
+
+        if (isOverlayHost) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable { showClearScopeDialog = false }
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().clickable(enabled = false) {},
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Clear Local History", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        clearScopeBody()
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { showClearScopeDialog = false },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("CANCEL") }
+                            Button(
+                                onClick = onConfirmClearScope,
+                                colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
+                                modifier = Modifier.weight(1f).testTag("confirm_clear_scope_btn")
+                            ) { Text("DELETE ($previewDeleteCount)", fontWeight = FontWeight.Bold) }
+                        }
+                    }
+                }
+            }
+        } else {
+            AlertDialog(
+                onDismissRequest = { showClearScopeDialog = false },
+                title = { Text("Clear Local History", fontWeight = FontWeight.Bold) },
+                text = clearScopeBody,
+                confirmButton = {
+                    Button(
+                        onClick = onConfirmClearScope,
+                        colors = ButtonDefaults.buttonColors(containerColor = ActionStopRed, contentColor = Color.White),
+                        modifier = Modifier.testTag("confirm_clear_scope_btn")
+                    ) {
+                        Text("DELETE ($previewDeleteCount)", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearScopeDialog = false }) {
+                        Text("CANCEL")
+                    }
+                }
+            )
+        }
+    }
     }
 }

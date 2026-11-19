@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/autopredictor_icon_fg"
+        android:drawable="@drawable/predict_manager_icon_1795070220882"
         android:gravity="center" />
 </layer-list>

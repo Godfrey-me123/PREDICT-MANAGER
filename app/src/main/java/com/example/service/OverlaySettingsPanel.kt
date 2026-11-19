@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Snooze
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -121,6 +122,8 @@ fun OverlaySettingsPanelComposable(
     onBackToMonitorPanel: (() -> Unit)? = null,
     onExpandFullScreen: () -> Unit = {},
     onClose: () -> Unit = {},
+    onToggleBetHand: (() -> Unit)? = null,
+    onToggleCashOutHand: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -427,6 +430,64 @@ fun OverlaySettingsPanelComposable(
                                 .weight(1f)
                                 .testTag("overlay_settings_target_multiplier_input")
                         )
+                    }
+
+                    OverlayToggleRow(
+                        label = "Automation Master Lock",
+                        checked = localConfig.automationMasterEnabled,
+                        testTag = "overlay_settings_automation_master_switch",
+                        onCheckedChange = { pushConfig(localConfig.copy(automationMasterEnabled = it)) }
+                    )
+                    OverlayToggleRow(
+                        label = "Dismiss Keyboard Safely Before Bet",
+                        checked = localConfig.dismissKeyboardBeforeBet,
+                        testTag = "overlay_settings_dismiss_keyboard_switch",
+                        onCheckedChange = { pushConfig(localConfig.copy(dismissKeyboardBeforeBet = it)) }
+                    )
+                    OverlayToggleRow(
+                        label = "Verify Stake Input Read-Back",
+                        checked = localConfig.verifyStakeReadBack,
+                        testTag = "overlay_settings_verify_stake_switch",
+                        onCheckedChange = { pushConfig(localConfig.copy(verifyStakeReadBack = it)) }
+                    )
+                    OverlayToggleRow(
+                        label = "Auto Game Recognition",
+                        checked = localConfig.autoGameRecognitionEnabled,
+                        testTag = "overlay_settings_auto_game_switch",
+                        onCheckedChange = { pushConfig(localConfig.copy(autoGameRecognitionEnabled = it)) }
+                    )
+                    OverlayToggleRow(
+                        label = "Collect & Record Crash History",
+                        checked = localConfig.historyCollectionEnabled,
+                        testTag = "overlay_settings_history_collection_switch",
+                        onCheckedChange = { pushConfig(localConfig.copy(historyCollectionEnabled = it)) }
+                    )
+
+                    if (onToggleBetHand != null && onToggleCashOutHand != null) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = onToggleBetHand,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("overlay_settings_bet_hand_btn")
+                            ) {
+                                Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("BET Hand", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            OutlinedButton(
+                                onClick = onToggleCashOutHand,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("overlay_settings_cash_hand_btn")
+                            ) {
+                                Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("CASH Hand", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
 
